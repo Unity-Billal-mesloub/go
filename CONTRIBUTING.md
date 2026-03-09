@@ -24,7 +24,7 @@ Otherwise, when filing an issue, make sure to answer these five questions:
 4. What did you expect to see?
 5. What did you see instead?
 
-For change proposals, see [Proposing Changes To Go](https://go.dev/s/proposal-process).
+For change proposals, see [Proposing Changes To Unity-Billal-mesloub/go](https://github.com/Unity-Billal-mesloub/proposal).
 
 ## Contributing code
 
