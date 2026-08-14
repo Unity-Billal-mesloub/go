@@ -785,7 +785,7 @@ type p struct {
 
 	// oldm is the previous m this p ran on.
 	//
-	// We are not assosciated with this m, so we have no control over its
+	// We are not associated with this m, so we have no control over its
 	// lifecycle. This value is an m.self object which points to the m
 	// until the m exits.
 	//
@@ -1198,8 +1198,6 @@ type _panic struct {
 	repanicked  bool // whether this panic repanicked
 	goexit      bool
 	deferreturn bool
-
-	gopanicFP unsafe.Pointer // frame pointer of the gopanic frame
 }
 
 // savedOpenDeferState tracks the extra state from _panic that's

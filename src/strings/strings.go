@@ -74,6 +74,7 @@ func ContainsRune(s string, r rune) bool {
 }
 
 // ContainsFunc reports whether any Unicode code points r within s satisfy f(r).
+// It stops as soon as a call to f returns true.
 func ContainsFunc(s string, f func(rune) bool) bool {
 	return IndexFunc(s, f) >= 0
 }
@@ -281,9 +282,7 @@ func genSplit(s, sep string, sepSave, n int) []string {
 		n = Count(s, sep) + 1
 	}
 
-	if n > len(s)+1 {
-		n = len(s) + 1
-	}
+	n = min(n, len(s)+1)
 	a := make([]string, n)
 	n--
 	i := 0
@@ -1084,6 +1083,31 @@ func trimRightUnicode(s, cutset string) string {
 	return s
 }
 
+func trimSpaceUnicode(s string) string {
+	for len(s) > 0 {
+		r, n := utf8.DecodeRuneInString(s)
+		if !stringslite.IsSpace(r) {
+			break
+		}
+		s = s[n:]
+	}
+	return trimRightSpaceUnicode(s)
+}
+
+func trimRightSpaceUnicode(s string) string {
+	for len(s) > 0 {
+		r, n := rune(s[len(s)-1]), 1
+		if r >= utf8.RuneSelf {
+			r, n = utf8.DecodeLastRuneInString(s)
+		}
+		if !stringslite.IsSpace(r) {
+			break
+		}
+		s = s[:len(s)-n]
+	}
+	return s
+}
+
 // TrimSpace returns a slice (substring) of the string s,
 // with all leading and trailing white space removed,
 // as defined by Unicode.
@@ -1093,7 +1117,7 @@ func TrimSpace(s string) string {
 		if c >= utf8.RuneSelf {
 			// If we run into a non-ASCII byte, fall back to the
 			// slower unicode-aware method on the remaining bytes.
-			return TrimFunc(s[lo:], unicode.IsSpace)
+			return trimSpaceUnicode(s[lo:])
 		}
 		if asciiSpace[c] != 0 {
 			continue
@@ -1103,7 +1127,7 @@ func TrimSpace(s string) string {
 		for hi := len(s) - 1; hi >= 0; hi-- {
 			c := s[hi]
 			if c >= utf8.RuneSelf {
-				return TrimRightFunc(s[:hi+1], unicode.IsSpace)
+				return trimRightSpaceUnicode(s[:hi+1])
 			}
 			if asciiSpace[c] == 0 {
 				// At this point, s[:hi+1] starts and ends with ASCII
@@ -1287,4 +1311,15 @@ func CutPrefix(s, prefix string) (after string, found bool) {
 // If suffix is the empty string, CutSuffix returns s, true.
 func CutSuffix(s, suffix string) (before string, found bool) {
 	return stringslite.CutSuffix(s, suffix)
+}
+
+// CutLast slices s around the last instance of sep,
+// returning the text before and after sep.
+// The found result reports whether sep appears in s.
+// If sep does not appear in s, CutLast returns s, "", false.
+func CutLast(s, sep string) (before, after string, found bool) {
+	if i := LastIndex(s, sep); i >= 0 {
+		return s[:i], s[i+len(sep):], true
+	}
+	return s, "", false
 }

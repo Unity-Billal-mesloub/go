@@ -10,6 +10,7 @@ import (
 	"cmd/compile/internal/logopt"
 	"cmd/compile/internal/objw"
 	"cmd/compile/internal/ssa"
+	"cmd/compile/internal/ssa/block"
 	"cmd/compile/internal/ssagen"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
@@ -419,7 +420,9 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.AddRestSource(obj.Addr{Type: obj.TYPE_REG, Reg: r3})
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = r
-	case ssa.OpRISCV64FSQRTS, ssa.OpRISCV64FNEGS, ssa.OpRISCV64FABSD, ssa.OpRISCV64FSQRTD, ssa.OpRISCV64FNEGD,
+	case ssa.OpRISCV64FSQRTS, ssa.OpRISCV64FSQRTD,
+		ssa.OpRISCV64FNEGS, ssa.OpRISCV64FNEGD,
+		ssa.OpRISCV64FABSS, ssa.OpRISCV64FABSD,
 		ssa.OpRISCV64FMVSX, ssa.OpRISCV64FMVXS, ssa.OpRISCV64FMVDX, ssa.OpRISCV64FMVXD,
 		ssa.OpRISCV64FCVTSW, ssa.OpRISCV64FCVTSL, ssa.OpRISCV64FCVTWS, ssa.OpRISCV64FCVTLS,
 		ssa.OpRISCV64FCVTDW, ssa.OpRISCV64FCVTDL, ssa.OpRISCV64FCVTWD, ssa.OpRISCV64FCVTLD, ssa.OpRISCV64FCVTDS, ssa.OpRISCV64FCVTSD,
@@ -608,13 +611,23 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.To.Sym = ir.Syms.PanicBounds
 
 	case ssa.OpRISCV64LoweredAtomicLoad8:
-		s.Prog(riscv.AFENCE)
+		p1 := s.Prog(riscv.AFENCE)
+		p1.From.Type = obj.TYPE_SPECIAL
+		p1.From.Offset = int64(riscv.SPOP_FENCE_RW)
+		p1.To.Type = obj.TYPE_SPECIAL
+		p1.To.Offset = int64(riscv.SPOP_FENCE_RW)
+
 		p := s.Prog(riscv.AMOVBU)
 		p.From.Type = obj.TYPE_MEM
 		p.From.Reg = v.Args[0].Reg()
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = v.Reg0()
-		s.Prog(riscv.AFENCE)
+
+		p2 := s.Prog(riscv.AFENCE)
+		p2.From.Type = obj.TYPE_SPECIAL
+		p2.From.Offset = int64(riscv.SPOP_FENCE_R)
+		p2.To.Type = obj.TYPE_SPECIAL
+		p2.To.Offset = int64(riscv.SPOP_FENCE_RW)
 
 	case ssa.OpRISCV64LoweredAtomicLoad32, ssa.OpRISCV64LoweredAtomicLoad64:
 		as := riscv.ALRW
@@ -628,13 +641,23 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.To.Reg = v.Reg0()
 
 	case ssa.OpRISCV64LoweredAtomicStore8:
-		s.Prog(riscv.AFENCE)
+		p1 := s.Prog(riscv.AFENCE)
+		p1.From.Type = obj.TYPE_SPECIAL
+		p1.From.Offset = int64(riscv.SPOP_FENCE_RW)
+		p1.To.Type = obj.TYPE_SPECIAL
+		p1.To.Offset = int64(riscv.SPOP_FENCE_W)
+
 		p := s.Prog(riscv.AMOVB)
 		p.From.Type = obj.TYPE_REG
 		p.From.Reg = v.Args[1].Reg()
 		p.To.Type = obj.TYPE_MEM
 		p.To.Reg = v.Args[0].Reg()
-		s.Prog(riscv.AFENCE)
+
+		p2 := s.Prog(riscv.AFENCE)
+		p2.From.Type = obj.TYPE_SPECIAL
+		p2.From.Offset = int64(riscv.SPOP_FENCE_RW)
+		p2.To.Type = obj.TYPE_SPECIAL
+		p2.To.Offset = int64(riscv.SPOP_FENCE_RW)
 
 	case ssa.OpRISCV64LoweredAtomicStore32, ssa.OpRISCV64LoweredAtomicStore64:
 		as := riscv.AAMOSWAPW
@@ -959,8 +982,12 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 		p.To.Reg = v.Reg()
 
 	case ssa.OpRISCV64LoweredPubBarrier:
-		// FENCE
-		s.Prog(v.Op.Asm())
+		// FENCE W, W
+		p := s.Prog(v.Op.Asm())
+		p.From.Type = obj.TYPE_SPECIAL
+		p.From.Offset = int64(riscv.SPOP_FENCE_W)
+		p.To.Type = obj.TYPE_SPECIAL
+		p.To.Offset = int64(riscv.SPOP_FENCE_W)
 
 	case ssa.OpRISCV64LoweredRound32F, ssa.OpRISCV64LoweredRound64F:
 		// input is already rounded
@@ -974,36 +1001,36 @@ func ssaGenValue(s *ssagen.State, v *ssa.Value) {
 }
 
 var blockBranch = [...]obj.As{
-	ssa.BlockRISCV64BEQ:  riscv.ABEQ,
-	ssa.BlockRISCV64BEQZ: riscv.ABEQZ,
-	ssa.BlockRISCV64BGE:  riscv.ABGE,
-	ssa.BlockRISCV64BGEU: riscv.ABGEU,
-	ssa.BlockRISCV64BGEZ: riscv.ABGEZ,
-	ssa.BlockRISCV64BGTZ: riscv.ABGTZ,
-	ssa.BlockRISCV64BLEZ: riscv.ABLEZ,
-	ssa.BlockRISCV64BLT:  riscv.ABLT,
-	ssa.BlockRISCV64BLTU: riscv.ABLTU,
-	ssa.BlockRISCV64BLTZ: riscv.ABLTZ,
-	ssa.BlockRISCV64BNE:  riscv.ABNE,
-	ssa.BlockRISCV64BNEZ: riscv.ABNEZ,
+	block.BlockRISCV64BEQ:  riscv.ABEQ,
+	block.BlockRISCV64BEQZ: riscv.ABEQZ,
+	block.BlockRISCV64BGE:  riscv.ABGE,
+	block.BlockRISCV64BGEU: riscv.ABGEU,
+	block.BlockRISCV64BGEZ: riscv.ABGEZ,
+	block.BlockRISCV64BGTZ: riscv.ABGTZ,
+	block.BlockRISCV64BLEZ: riscv.ABLEZ,
+	block.BlockRISCV64BLT:  riscv.ABLT,
+	block.BlockRISCV64BLTU: riscv.ABLTU,
+	block.BlockRISCV64BLTZ: riscv.ABLTZ,
+	block.BlockRISCV64BNE:  riscv.ABNE,
+	block.BlockRISCV64BNEZ: riscv.ABNEZ,
 }
 
 func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 	s.SetPos(b.Pos)
 
 	switch b.Kind {
-	case ssa.BlockPlain, ssa.BlockDefer:
+	case block.BlockPlain, block.BlockDefer:
 		if b.Succs[0].Block() != next {
 			p := s.Prog(obj.AJMP)
 			p.To.Type = obj.TYPE_BRANCH
 			s.Branches = append(s.Branches, ssagen.Branch{P: p, B: b.Succs[0].Block()})
 		}
-	case ssa.BlockExit, ssa.BlockRetJmp:
-	case ssa.BlockRet:
+	case block.BlockExit, block.BlockRetJmp:
+	case block.BlockRet:
 		s.Prog(obj.ARET)
-	case ssa.BlockRISCV64BEQ, ssa.BlockRISCV64BEQZ, ssa.BlockRISCV64BNE, ssa.BlockRISCV64BNEZ,
-		ssa.BlockRISCV64BLT, ssa.BlockRISCV64BLEZ, ssa.BlockRISCV64BGE, ssa.BlockRISCV64BGEZ,
-		ssa.BlockRISCV64BLTZ, ssa.BlockRISCV64BGTZ, ssa.BlockRISCV64BLTU, ssa.BlockRISCV64BGEU:
+	case block.BlockRISCV64BEQ, block.BlockRISCV64BEQZ, block.BlockRISCV64BNE, block.BlockRISCV64BNEZ,
+		block.BlockRISCV64BLT, block.BlockRISCV64BLEZ, block.BlockRISCV64BGE, block.BlockRISCV64BGEZ,
+		block.BlockRISCV64BLTZ, block.BlockRISCV64BGTZ, block.BlockRISCV64BLTU, block.BlockRISCV64BGEU:
 
 		as := blockBranch[b.Kind]
 		invAs := riscv.InvertBranch(as)
@@ -1026,14 +1053,14 @@ func ssaGenBlock(s *ssagen.State, b, next *ssa.Block) {
 
 		p.From.Type = obj.TYPE_REG
 		switch b.Kind {
-		case ssa.BlockRISCV64BEQ, ssa.BlockRISCV64BNE, ssa.BlockRISCV64BLT, ssa.BlockRISCV64BGE, ssa.BlockRISCV64BLTU, ssa.BlockRISCV64BGEU:
+		case block.BlockRISCV64BEQ, block.BlockRISCV64BNE, block.BlockRISCV64BLT, block.BlockRISCV64BGE, block.BlockRISCV64BLTU, block.BlockRISCV64BGEU:
 			if b.NumControls() != 2 {
 				b.Fatalf("Unexpected number of controls (%d != 2): %s", b.NumControls(), b.LongString())
 			}
 			p.From.Reg = b.Controls[0].Reg()
 			p.Reg = b.Controls[1].Reg()
 
-		case ssa.BlockRISCV64BEQZ, ssa.BlockRISCV64BNEZ, ssa.BlockRISCV64BGEZ, ssa.BlockRISCV64BLEZ, ssa.BlockRISCV64BLTZ, ssa.BlockRISCV64BGTZ:
+		case block.BlockRISCV64BEQZ, block.BlockRISCV64BNEZ, block.BlockRISCV64BGEZ, block.BlockRISCV64BLEZ, block.BlockRISCV64BLTZ, block.BlockRISCV64BGTZ:
 			if b.NumControls() != 1 {
 				b.Fatalf("Unexpected number of controls (%d != 1): %s", b.NumControls(), b.LongString())
 			}

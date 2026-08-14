@@ -20,7 +20,6 @@ import (
 	"math"
 	"os"
 	"slices"
-	"sort"
 	"strings"
 
 	"cmd/compile/internal/abi"
@@ -30,6 +29,7 @@ import (
 	"cmd/compile/internal/objw"
 	"cmd/compile/internal/reflectdata"
 	"cmd/compile/internal/ssa"
+	"cmd/compile/internal/ssa/block"
 	"cmd/compile/internal/typebits"
 	"cmd/compile/internal/types"
 	"cmd/internal/hash"
@@ -707,15 +707,15 @@ func (lv *Liveness) solve() {
 
 			newliveout.Clear()
 			switch b.Kind {
-			case ssa.BlockRet:
+			case block.BlockRet:
 				for _, pos := range lv.cache.retuevar {
 					newliveout.Set(pos)
 				}
-			case ssa.BlockRetJmp:
+			case block.BlockRetJmp:
 				for _, pos := range lv.cache.tailuevar {
 					newliveout.Set(pos)
 				}
-			case ssa.BlockExit:
+			case block.BlockExit:
 				// panic exit - nothing to do
 			default:
 				// A variable is live on output from this block
@@ -1164,7 +1164,7 @@ func (lv *Liveness) format(v *ssa.Value, live bitvec.BitVec) (src.XPos, string) 
 			names = append(names, n.Sym().Name)
 		}
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	for _, v := range names {
 		s += " " + v
 	}
@@ -1478,7 +1478,7 @@ func (lv *Liveness) emitStackObjects() *obj.LSym {
 	// Format must match runtime/stack.go:stackObjectRecord.
 	x := base.Ctxt.Lookup(lv.fn.LSym.Name + ".stkobj")
 	x.Set(obj.AttrContentAddressable, true)
-	x.Align = 4
+	x.Align = int16(types.PtrSize) // see https://go.dev/issue/80668
 	lv.fn.LSym.Func().StackObjects = x
 	off := 0
 	off = objw.Uintptr(x, off, uint64(len(vars)))

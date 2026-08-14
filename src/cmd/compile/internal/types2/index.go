@@ -77,7 +77,7 @@ func (check *Checker) indexExpr(x *operand, e *syntax.IndexExpr) (isFuncInst boo
 		if isString(typ) {
 			valid = true
 			if x.mode() == constant_ {
-				length = int64(len(constant.StringVal(x.val)))
+				length = constant.StringLen(x.val)
 			}
 			// an indexed string always yields a byte value
 			// (not a constant) even if the string and the
@@ -114,7 +114,7 @@ func (check *Checker) indexExpr(x *operand, e *syntax.IndexExpr) (isFuncInst boo
 			return false
 		}
 		var key operand
-		check.expr(nil, &key, index)
+		check.genericExpr(typ.key, &key, index, nil)
 		check.assignment(&key, typ.key, "map index")
 		// ok to continue even if indexing failed - map element type is known
 		x.mode_ = mapindex
@@ -188,7 +188,7 @@ func (check *Checker) indexExpr(x *operand, e *syntax.IndexExpr) (isFuncInst boo
 					return false
 				}
 				var k operand
-				check.expr(nil, &k, index)
+				check.genericExpr(key, &k, index, nil)
 				check.assignment(&k, key, "map index")
 				// ok to continue even if indexing failed - map element type is known
 				x.mode_ = mapindex
@@ -229,7 +229,7 @@ func (check *Checker) indexExpr(x *operand, e *syntax.IndexExpr) (isFuncInst boo
 }
 
 func (check *Checker) sliceExpr(x *operand, e *syntax.SliceExpr) {
-	check.expr(nil, x, e.X)
+	check.expr(nil, nil, x, e.X)
 	if !x.isValid() {
 		check.use(e.Index[:]...)
 		return
@@ -302,7 +302,7 @@ func (check *Checker) sliceExpr(x *operand, e *syntax.SliceExpr) {
 			}
 			valid = true
 			if x.mode() == constant_ {
-				length = int64(len(constant.StringVal(x.val)))
+				length = constant.StringLen(x.val)
 			}
 			// spec: "For untyped string operands the result
 			// is a non-constant value of type string."
@@ -422,7 +422,7 @@ func (check *Checker) index(index syntax.Expr, max int64) (typ Type, val int64) 
 	val = -1
 
 	var x operand
-	check.expr(nil, &x, index)
+	check.expr(nil, nil, &x, index)
 	if !check.isValidIndex(&x, InvalidIndex, "index", false) {
 		return
 	}

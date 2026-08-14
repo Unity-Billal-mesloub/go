@@ -791,7 +791,7 @@ type PanicNilError struct {
 	_ [0]*PanicNilError
 }
 
-func (*PanicNilError) Error() string { return "panic called with nil argument" }
+func (*PanicNilError) Error() string { return "runtime error: panic called with nil argument" }
 func (*PanicNilError) RuntimeError() {}
 
 var panicnil = &godebugInc{name: "panicnil"}
@@ -847,7 +847,6 @@ func gopanic(e any) {
 
 	var p _panic
 	p.arg = e
-	p.gopanicFP = unsafe.Pointer(sys.GetCallerSP())
 
 	runningPanicDefers.Add(1)
 
@@ -1146,7 +1145,7 @@ func gorecover() any {
 				case abi.FuncIDWrapper:
 					continue
 				case abi.FuncID_gopanic:
-					if u.frame.fp == uintptr(p.gopanicFP) && nonWrapperFrames > 0 {
+					if u.frame.sp == uintptr(p.startSP) && nonWrapperFrames > 0 {
 						canRecover = true
 					}
 					break loop
@@ -1719,6 +1718,7 @@ func isAbortPC(pc uintptr) bool {
 }
 
 // For debugging only.
+//
 //go:noinline
 //go:nosplit
 func dumpPanicDeferState(where string, gp *g) {
@@ -1732,7 +1732,7 @@ func dumpPanicDeferState(where string, gp *g) {
 			println("  frame sp=", hex(u.frame.sp), "fp=", hex(u.frame.fp), "pc=", pcName(u.frame.pc), "+", pcOff(u.frame.pc))
 			// Print panic.
 			for p != nil && uintptr(p.sp) == u.frame.sp {
-				println("    panic", p, "sp=", p.sp, "fp=", p.fp, "arg=", p.arg, "recovered=", p.recovered, "pc=", pcName(p.pc), "+", pcOff(p.pc), "retpc=", pcName(p.retpc), "+", pcOff(p.retpc), "startsp=", p.startSP, "gopanicfp=", p.gopanicFP, "startPC=", hex(p.startPC), pcName(p.startPC), "+", pcOff(p.startPC))
+				println("    panic", p, "sp=", p.sp, "fp=", p.fp, "arg=", p.arg, "recovered=", p.recovered, "pc=", pcName(p.pc), "+", pcOff(p.pc), "retpc=", pcName(p.retpc), "+", pcOff(p.retpc), "startsp=", p.startSP, "startPC=", hex(p.startPC), pcName(p.startPC), "+", pcOff(p.startPC))
 				p = p.link
 			}
 

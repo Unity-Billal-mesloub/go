@@ -57,7 +57,7 @@ cd ..
 env PATH=
 env path=
 ! go build -buildvcs -o example.exe .
-stderr 'go: missing Git command\. See https://golang\.org/s/gogetcmd$'
+stderr 'go: missing Git command\. See https://go\.dev/s/gogetcmd$'
 
 # ...but by default we should omit VCS metadata when the tool is missing.
 
@@ -74,7 +74,7 @@ go version -m example.exe
 # Other flag values should be rejected with a useful error message.
 
 ! go build -buildvcs=hg -o example.exe .
-stderr '\Ainvalid boolean value "hg" for -buildvcs: value is neither ''auto'' nor a valid bool\nusage: go build .*\nRun ''go help build'' for details.\n\z'
+stderr '\Ainvalid boolean value "hg" for -buildvcs: value is neither ''auto'' nor a valid bool\nusage: go build .*'
 
 
 -- go.mod --

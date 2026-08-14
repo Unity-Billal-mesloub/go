@@ -46,8 +46,12 @@ type opInfo struct {
 	zeroWidth         bool      // op never translates into any machine code. example: copy, which may sometimes translate to machine code, is not zero-width.
 	unsafePoint       bool      // this op is an unsafe point, i.e. not safe for async preemption
 	fixedReg          bool      // this op will be assigned a fixed register
+	earlyOk           bool      // executing this op in an earlier block is ok
+	addrSinkArg0      bool      // the address in arg0 does not propagate to the result
+	addrSinkArg1      bool      // the address in arg1 does not propagate to the result
 	symEffect         SymEffect // effect this op has on symbol in aux
 	scale             uint8     // amd64/386 indexed load scale
+	zeroUpperBits     uint8     // the op writes a 64-bit GPR whose upper N bits are always zero (0, 32, 48 or 56); for a tuple op, this holds for every integer result
 }
 
 type inputInfo struct {
@@ -132,7 +136,7 @@ type AuxCall struct {
 // At this point (active development of register ABI) that is very premature,
 // but if this turns out to be a cost, we could do it.
 func (a *AuxCall) Reg(i *regInfo, c *Config) *regInfo {
-	if a.reg.clobbers != 0 {
+	if !a.reg.clobbers.empty() {
 		// Already updated
 		return a.reg
 	}
@@ -146,7 +150,7 @@ func (a *AuxCall) Reg(i *regInfo, c *Config) *regInfo {
 	for _, p := range a.abiInfo.InParams() {
 		for _, r := range p.Registers {
 			m := archRegForAbiReg(r, c)
-			a.reg.inputs = append(a.reg.inputs, inputInfo{idx: k, regs: (1 << m)})
+			a.reg.inputs = append(a.reg.inputs, inputInfo{idx: k, regs: regMaskAt(register(m))})
 			k++
 		}
 	}
@@ -155,7 +159,7 @@ func (a *AuxCall) Reg(i *regInfo, c *Config) *regInfo {
 	for _, p := range a.abiInfo.OutParams() {
 		for _, r := range p.Registers {
 			m := archRegForAbiReg(r, c)
-			a.reg.outputs = append(a.reg.outputs, outputInfo{idx: k, regs: (1 << m)})
+			a.reg.outputs = append(a.reg.outputs, outputInfo{idx: k, regs: regMaskAt(register(m))})
 			k++
 		}
 	}
@@ -180,7 +184,7 @@ func (a *AuxCall) ResultReg(c *Config) *regInfo {
 	for _, p := range a.abiInfo.OutParams() {
 		for _, r := range p.Registers {
 			m := archRegForAbiReg(r, c)
-			a.reg.inputs = append(a.reg.inputs, inputInfo{idx: k, regs: (1 << m)})
+			a.reg.inputs = append(a.reg.inputs, inputInfo{idx: k, regs: regMaskAt(register(m))})
 			k++
 		}
 	}
@@ -203,7 +207,7 @@ func archRegForAbiReg(r abi.RegIndex, c *Config) uint8 {
 // package (assembler).
 func ObjRegForAbiReg(r abi.RegIndex, c *Config) int16 {
 	m := archRegForAbiReg(r, c)
-	return c.registers[m].objNum
+	return c.registers[m].ObjNum
 }
 
 // ArgWidth returns the amount of stack needed for all the inputs

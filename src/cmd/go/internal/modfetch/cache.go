@@ -498,7 +498,7 @@ func readDiskStat(ctx context.Context, path, rev string) (file string, info *Rev
 	// Remarshal and update the cache file if needed.
 	data2, err := json.Marshal(info)
 	if err == nil && !bytes.Equal(data2, data) {
-		writeDiskCache(ctx, file, data)
+		writeDiskCache(ctx, file, data2)
 	}
 	return file, info, nil
 }
@@ -781,7 +781,7 @@ func rewriteVersionList(ctx context.Context, dir string) (err error) {
 	}
 	if fi, err := f.Stat(); err == nil && int(fi.Size()) == buf.Len() {
 		old := make([]byte, buf.Len()+1)
-		if n, err := f.ReadAt(old, 0); err == io.EOF && n == buf.Len() && bytes.Equal(buf.Bytes(), old) {
+		if n, err := f.ReadAt(old, 0); err == io.EOF && n == buf.Len() && bytes.Equal(buf.Bytes(), old[:n]) {
 			return nil // No edit needed.
 		}
 	}

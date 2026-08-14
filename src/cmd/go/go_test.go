@@ -487,11 +487,12 @@ func (tg *testgoData) goTool() string {
 // returning exit status.
 func (tg *testgoData) doRun(args []string) error {
 	tg.t.Helper()
-	if tg.inParallel {
-		for _, arg := range args {
-			if strings.HasPrefix(arg, "testdata") || strings.HasPrefix(arg, "./testdata") {
-				tg.t.Fatal("internal testsuite error: parallel run using testdata")
-			}
+	if !tg.inParallel {
+		tg.t.Fatal("all tests using testgoData must run in parallel")
+	}
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "testdata") || strings.HasPrefix(arg, "./testdata") {
+			tg.t.Fatal("internal testsuite error: parallel run using testdata")
 		}
 	}
 
@@ -1673,56 +1674,6 @@ func TestParallelTest(t *testing.T) {
 	tg.run("test", "-p=4", "p1", "p2", "p3", "p4")
 }
 
-func TestBinaryOnlyPackages(t *testing.T) {
-	tooSlow(t, "compiles several packages sequentially")
-
-	tg := testgo(t)
-	defer tg.cleanup()
-	tg.parallel()
-	tg.makeTempdir()
-	tg.setenv("GOPATH", tg.path("."))
-
-	tg.tempFile("src/p1/p1.go", `//go:binary-only-package
-
-		package p1
-	`)
-	tg.wantStale("p1", "binary-only packages are no longer supported", "p1 is binary-only, and this message should always be printed")
-	tg.runFail("install", "p1")
-	tg.grepStderr("binary-only packages are no longer supported", "did not report attempt to compile binary-only package")
-
-	tg.tempFile("src/p1/p1.go", `
-		package p1
-		import "fmt"
-		func F(b bool) { fmt.Printf("hello from p1\n"); if b { F(false) } }
-	`)
-	tg.run("install", "p1")
-	os.Remove(tg.path("src/p1/p1.go"))
-	tg.mustNotExist(tg.path("src/p1/p1.go"))
-
-	tg.tempFile("src/p2/p2.go", `//go:binary-only-packages-are-not-great
-
-		package p2
-		import "p1"
-		func F() { p1.F(true) }
-	`)
-	tg.runFail("install", "p2")
-	tg.grepStderr("no Go files", "did not complain about missing sources")
-
-	tg.tempFile("src/p1/missing.go", `//go:binary-only-package
-
-		package p1
-		import _ "fmt"
-		func G()
-	`)
-	tg.wantStale("p1", "binary-only package", "should NOT want to rebuild p1 (first)")
-	tg.runFail("install", "p2")
-	tg.grepStderr("p1: binary-only packages are no longer supported", "did not report error for binary-only p1")
-
-	tg.run("list", "-deps", "-f", "{{.ImportPath}}: {{.BinaryOnly}}", "p2")
-	tg.grepStdout("p1: true", "p1 not listed as BinaryOnly")
-	tg.grepStdout("p2: false", "p2 listed as BinaryOnly")
-}
-
 // Issue 16050 and 21884.
 func TestLinkSysoFiles(t *testing.T) {
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
@@ -1948,6 +1899,7 @@ func TestNeedVersion(t *testing.T) {
 
 func TestBuildmodePIE(t *testing.T) {
 	tooSlow(t, "links binaries")
+	t.Parallel()
 
 	if !platform.BuildModeSupported(runtime.Compiler, "pie", runtime.GOOS, runtime.GOARCH) {
 		t.Skipf("skipping test because buildmode=pie is not supported on %s/%s", runtime.GOOS, runtime.GOARCH)
@@ -1970,6 +1922,7 @@ func TestWindowsDefaultBuildmodIsPIE(t *testing.T) {
 		t.Skip("skipping windows only test")
 	}
 	tooSlow(t, "links binaries")
+	t.Parallel()
 
 	t.Run("non-cgo", func(t *testing.T) {
 		testBuildmodePIE(t, false, false)
@@ -2650,25 +2603,4 @@ func TestCoverpkgTestOnly(t *testing.T) {
 	tg.run("test", "-coverpkg=a", "atest")
 	tg.grepStderrNot("no packages being tested depend on matches", "bad match message")
 	tg.grepStdout("coverage: 100", "no coverage")
-}
-
-// Regression test for golang.org/issue/34499: version command should not crash
-// when executed in a deleted directory on Linux.
-func TestExecInDeletedDir(t *testing.T) {
-	switch runtime.GOOS {
-	case "windows", "plan9",
-		"aix",                // Fails with "device busy".
-		"solaris", "illumos": // Fails with "invalid argument".
-		t.Skipf("%v does not support removing the current working directory", runtime.GOOS)
-	}
-	tg := testgo(t)
-	defer tg.cleanup()
-
-	tg.makeTempdir()
-	t.Chdir(tg.tempdir)
-
-	tg.check(os.Remove(tg.tempdir))
-
-	// `go version` should not fail
-	tg.run("version")
 }

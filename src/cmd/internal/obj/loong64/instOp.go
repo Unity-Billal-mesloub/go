@@ -9,16 +9,18 @@ import (
 )
 
 var oprrrr = map[obj.As]uint32{
-	AFMADDF:  0x81 << 20,  // fmadd.s
-	AFMADDD:  0x82 << 20,  // fmadd.d
-	AFMSUBF:  0x85 << 20,  // fmsub.s
-	AFMSUBD:  0x86 << 20,  // fmsub.d
-	AFNMADDF: 0x89 << 20,  // fnmadd.f
-	AFNMADDD: 0x8a << 20,  // fnmadd.d
-	AFNMSUBF: 0x8d << 20,  // fnmsub.s
-	AFNMSUBD: 0x8e << 20,  // fnmsub.d
-	AVSHUFB:  0x0d5 << 20, // vshuf.b
-	AXVSHUFB: 0x0d6 << 20, // xvshuf.b
+	AFMADDF:    0x81 << 20, // fmadd.s
+	AFMADDD:    0x82 << 20, // fmadd.d
+	AFMSUBF:    0x85 << 20, // fmsub.s
+	AFMSUBD:    0x86 << 20, // fmsub.d
+	AFNMADDF:   0x89 << 20, // fnmadd.f
+	AFNMADDD:   0x8a << 20, // fnmadd.d
+	AFNMSUBF:   0x8d << 20, // fnmsub.s
+	AFNMSUBD:   0x8e << 20, // fnmsub.d
+	AVSHUFB:    0xd5 << 20, // vshuf.b
+	AXVSHUFB:   0xd6 << 20, // xvshuf.b
+	AVBITSELV:  0xd1 << 20, // vbitsel.v
+	AXVBITSELV: 0xd2 << 20, // xvbitsel.v
 }
 
 var oprrr = map[obj.As]uint32{
@@ -36,6 +38,7 @@ var oprrr = map[obj.As]uint32{
 	ASGTU:          0x25 << 15,          // sltu
 	AMASKEQZ:       0x26 << 15,          // maskeqz
 	AMASKNEZ:       0x27 << 15,          // masknez
+	ASCQ:           0x070AE << 15,       // sc.q
 	ANOR:           0x28 << 15,          // nor
 	AAND:           0x29 << 15,          // and
 	AOR:            0x2a << 15,          // or
@@ -276,7 +279,7 @@ var oprrr = map[obj.As]uint32{
 	AXVSUBWODVW:    0x0e84a << 15,       // xvsubwod.d.w
 	AXVSUBWODQV:    0x0e84b << 15,       // xvsubwod.q.d
 	AVADDWEVHBU:    0x0e05c << 15,       // vaddwev.h.bu
-	AVADDWEVWHU:    0x0e05e << 15,       // vaddwev.w.hu
+	AVADDWEVWHU:    0x0e05d << 15,       // vaddwev.w.hu
 	AVADDWEVVWU:    0x0e05e << 15,       // vaddwev.d.wu
 	AVADDWEVQVU:    0x0e05f << 15,       // vaddwev.q.du
 	AVSUBWEVHBU:    0x0e060 << 15,       // vsubwev.h.bu
@@ -327,7 +330,7 @@ var oprrr = map[obj.As]uint32{
 	AVMADDWEVWH:    0x0e159 << 15,       // vmaddwev.w.h
 	AVMADDWEVVW:    0x0e15a << 15,       // vmaddwev.d.w
 	AVMADDWEVQV:    0x0e15b << 15,       // vmaddwev.q.d
-	AVMADDWODHB:    0x0e15c << 15,       // vmaddwov.h.b
+	AVMADDWODHB:    0x0e15c << 15,       // vmaddwod.h.b
 	AVMADDWODWH:    0x0e15d << 15,       // vmaddwod.w.h
 	AVMADDWODVW:    0x0e15e << 15,       // vmaddwod.d.w
 	AVMADDWODQV:    0x0e15f << 15,       // vmaddwod.q.d
@@ -335,7 +338,7 @@ var oprrr = map[obj.As]uint32{
 	AVMADDWEVWHU:   0x0e169 << 15,       // vmaddwev.w.hu
 	AVMADDWEVVWU:   0x0e16a << 15,       // vmaddwev.d.wu
 	AVMADDWEVQVU:   0x0e16b << 15,       // vmaddwev.q.du
-	AVMADDWODHBU:   0x0e16c << 15,       // vmaddwov.h.bu
+	AVMADDWODHBU:   0x0e16c << 15,       // vmaddwod.h.bu
 	AVMADDWODWHU:   0x0e16d << 15,       // vmaddwod.w.hu
 	AVMADDWODVWU:   0x0e16e << 15,       // vmaddwod.d.wu
 	AVMADDWODQVU:   0x0e16f << 15,       // vmaddwod.q.du
@@ -343,7 +346,7 @@ var oprrr = map[obj.As]uint32{
 	AVMADDWEVWHUH:  0x0e179 << 15,       // vmaddwev.w.hu.h
 	AVMADDWEVVWUW:  0x0e17a << 15,       // vmaddwev.d.wu.w
 	AVMADDWEVQVUV:  0x0e17b << 15,       // vmaddwev.q.du.d
-	AVMADDWODHBUB:  0x0e17c << 15,       // vmaddwov.h.bu.b
+	AVMADDWODHBUB:  0x0e17c << 15,       // vmaddwod.h.bu.b
 	AVMADDWODWHUH:  0x0e17d << 15,       // vmaddwod.w.hu.h
 	AVMADDWODVWUW:  0x0e17e << 15,       // vmaddwod.d.wu.w
 	AVMADDWODQVUV:  0x0e17f << 15,       // vmaddwod.q.du.d
@@ -351,7 +354,7 @@ var oprrr = map[obj.As]uint32{
 	AXVMADDWEVWH:   0x0e959 << 15,       // xvmaddwev.w.h
 	AXVMADDWEVVW:   0x0e95a << 15,       // xvmaddwev.d.w
 	AXVMADDWEVQV:   0x0e95b << 15,       // xvmaddwev.q.d
-	AXVMADDWODHB:   0x0e95c << 15,       // xvmaddwov.h.b
+	AXVMADDWODHB:   0x0e95c << 15,       // xvmaddwod.h.b
 	AXVMADDWODWH:   0x0e95d << 15,       // xvmaddwod.w.h
 	AXVMADDWODVW:   0x0e95e << 15,       // xvmaddwod.d.w
 	AXVMADDWODQV:   0x0e95f << 15,       // xvmaddwod.q.d
@@ -359,7 +362,7 @@ var oprrr = map[obj.As]uint32{
 	AXVMADDWEVWHU:  0x0e969 << 15,       // xvmaddwev.w.hu
 	AXVMADDWEVVWU:  0x0e96a << 15,       // xvmaddwev.d.wu
 	AXVMADDWEVQVU:  0x0e96b << 15,       // xvmaddwev.q.du
-	AXVMADDWODHBU:  0x0e96c << 15,       // xvmaddwov.h.bu
+	AXVMADDWODHBU:  0x0e96c << 15,       // xvmaddwod.h.bu
 	AXVMADDWODWHU:  0x0e96d << 15,       // xvmaddwod.w.hu
 	AXVMADDWODVWU:  0x0e96e << 15,       // xvmaddwod.d.wu
 	AXVMADDWODQVU:  0x0e96f << 15,       // xvmaddwod.q.du
@@ -367,7 +370,7 @@ var oprrr = map[obj.As]uint32{
 	AXVMADDWEVWHUH: 0x0e979 << 15,       // xvmaddwev.w.hu.h
 	AXVMADDWEVVWUW: 0x0e97a << 15,       // xvmaddwev.d.wu.w
 	AXVMADDWEVQVUV: 0x0e97b << 15,       // xvmaddwev.q.du.d
-	AXVMADDWODHBUB: 0x0e97c << 15,       // xvmaddwov.h.bu.b
+	AXVMADDWODHBUB: 0x0e97c << 15,       // xvmaddwod.h.bu.b
 	AXVMADDWODWHUH: 0x0e97d << 15,       // xvmaddwod.w.hu.h
 	AXVMADDWODVWUW: 0x0e97e << 15,       // xvmaddwod.d.wu.w
 	AXVMADDWODQVUV: 0x0e97f << 15,       // xvmaddwod.q.du.d
@@ -448,7 +451,7 @@ var oprrr = map[obj.As]uint32{
 	AXVSSUBW:       0x0e892 << 15,       // xvssub.w
 	AXVSSUBV:       0x0e893 << 15,       // xvssub.d
 	AXVSADDBU:      0x0e894 << 15,       // vxsadd.bu
-	AXVSADDHU:      0x0e896 << 15,       // vxsadd.hu
+	AXVSADDHU:      0x0e895 << 15,       // vxsadd.hu
 	AXVSADDWU:      0x0e896 << 15,       // vxsadd.wu
 	AXVSADDVU:      0x0e897 << 15,       // vxsadd.du
 	AXVSSUBBU:      0x0e898 << 15,       // xvssub.bu
@@ -568,6 +571,10 @@ var oprr = map[obj.As]uint32{
 	ARDTIMELW:    0x18 << 10,            // rdtimel.w
 	ARDTIMEHW:    0x19 << 10,            // rdtimeh.w
 	ARDTIMED:     0x1a << 10,            // rdtime.d
+	ALLACQW:      0x0E15E0 << 10,        // ll.acq.w
+	ASCRELW:      0x0E15E1 << 10,        // sc.rel.w
+	ALLACQV:      0x0E15E2 << 10,        // ll.acq.d
+	ASCRELV:      0x0E15E3 << 10,        // sc.rel.d
 	ATRUNCFV:     0x46a9 << 10,          // ftintrz.l.s
 	ATRUNCDV:     0x46aa << 10,          // ftintrz.l.d
 	ATRUNCFW:     0x46a1 << 10,          // ftintrz.w.s
@@ -588,6 +595,8 @@ var oprr = map[obj.As]uint32{
 	AFTINTVF:     0x46c9 << 10,          // ftint.l.s
 	AMOVDV:       0x46ca << 10,          // ftint.l.d
 	AFTINTVD:     0x46ca << 10,          // ftint.l.d
+	AFRINTF:      0x4791 << 10,          // frint.s
+	AFRINTD:      0x4792 << 10,          // frint.d
 	AMOVDF:       0x4646 << 10,          // fcvt.s.d
 	AMOVFD:       0x4649 << 10,          // fcvt.d.s
 	AABSF:        0x4501 << 10,          // fabs.s
@@ -696,6 +705,7 @@ var opi = map[obj.As]uint32{
 	ASYSCALL: 0x56 << 15,   // syscall
 	ABREAK:   0x54 << 15,   // break
 	ADBAR:    0x70e4 << 15, // dbar
+	AIBAR:    0x70e5 << 15, // ibar
 }
 
 var opir = map[obj.As]uint32{
@@ -758,7 +768,9 @@ var opirr = map[obj.As]uint32{
 	-AMOVD:      0x0ae << 22,          // fld.d
 	AMOVD:       0x0af << 22,          // fst.d
 	-ALL:        0x020 << 24,          // ll.w
+	-ALLW:       0x020 << 24,          // ll.w
 	ASC:         0x021 << 24,          // sc.w
+	ASCW:        0x021 << 24,          // sc.w
 	-ALLV:       0x022 << 24,          // ll.d
 	ASCV:        0x023 << 24,          // sc.d
 	-AMOVWP:     0x24 << 24,           // ldptr.w
@@ -897,6 +909,8 @@ var opirr = map[obj.As]uint32{
 	AXVBITREVH:  0x1dc6<<18 | 0x1<<14, // xvbitrevi.h
 	AXVBITREVW:  0x1dc6<<18 | 0x1<<15, // xvbitrevi.w
 	AXVBITREVV:  0x1dc6<<18 | 0x1<<16, // xvbitrevi.d
+	AVBITSELB:   0x1cf1 << 18,         // vbitseli.b
+	AXVBITSELB:  0x1df1 << 18,         // xvbitseli.b
 }
 
 var opirrr = map[obj.As]uint32{
@@ -914,4 +928,300 @@ var opirir = map[obj.As]uint32{
 
 var opiir = map[obj.As]uint32{
 	APRELD: 0x0ab << 22, // preld
+}
+
+var atomicInst = map[obj.As]uint32{
+	AAMSWAPB:   0x070B8 << 15, // amswap.b
+	AAMSWAPH:   0x070B9 << 15, // amswap.h
+	AAMSWAPW:   0x070C0 << 15, // amswap.w
+	AAMSWAPV:   0x070C1 << 15, // amswap.d
+	AAMCASB:    0x070B0 << 15, // amcas.b
+	AAMCASH:    0x070B1 << 15, // amcas.h
+	AAMCASW:    0x070B2 << 15, // amcas.w
+	AAMCASV:    0x070B3 << 15, // amcas.d
+	AAMADDW:    0x070C2 << 15, // amadd.w
+	AAMADDV:    0x070C3 << 15, // amadd.d
+	AAMANDW:    0x070C4 << 15, // amand.w
+	AAMANDV:    0x070C5 << 15, // amand.d
+	AAMORW:     0x070C6 << 15, // amor.w
+	AAMORV:     0x070C7 << 15, // amor.d
+	AAMXORW:    0x070C8 << 15, // amxor.w
+	AAMXORV:    0x070C9 << 15, // amxor.d
+	AAMMAXW:    0x070CA << 15, // ammax.w
+	AAMMAXV:    0x070CB << 15, // ammax.d
+	AAMMINW:    0x070CC << 15, // ammin.w
+	AAMMINV:    0x070CD << 15, // ammin.d
+	AAMMAXWU:   0x070CE << 15, // ammax.wu
+	AAMMAXVU:   0x070CF << 15, // ammax.du
+	AAMMINWU:   0x070D0 << 15, // ammin.wu
+	AAMMINVU:   0x070D1 << 15, // ammin.du
+	AAMSWAPDBB: 0x070BC << 15, // amswap_db.b
+	AAMSWAPDBH: 0x070BD << 15, // amswap_db.h
+	AAMSWAPDBW: 0x070D2 << 15, // amswap_db.w
+	AAMSWAPDBV: 0x070D3 << 15, // amswap_db.d
+	AAMCASDBB:  0x070B4 << 15, // amcas_db.b
+	AAMCASDBH:  0x070B5 << 15, // amcas_db.h
+	AAMCASDBW:  0x070B6 << 15, // amcas_db.w
+	AAMCASDBV:  0x070B7 << 15, // amcas_db.d
+	AAMADDDBW:  0x070D4 << 15, // amadd_db.w
+	AAMADDDBV:  0x070D5 << 15, // amadd_db.d
+	AAMANDDBW:  0x070D6 << 15, // amand_db.w
+	AAMANDDBV:  0x070D7 << 15, // amand_db.d
+	AAMORDBW:   0x070D8 << 15, // amor_db.w
+	AAMORDBV:   0x070D9 << 15, // amor_db.d
+	AAMXORDBW:  0x070DA << 15, // amxor_db.w
+	AAMXORDBV:  0x070DB << 15, // amxor_db.d
+	AAMMAXDBW:  0x070DC << 15, // ammax_db.w
+	AAMMAXDBV:  0x070DD << 15, // ammax_db.d
+	AAMMINDBW:  0x070DE << 15, // ammin_db.w
+	AAMMINDBV:  0x070DF << 15, // ammin_db.d
+	AAMMAXDBWU: 0x070E0 << 15, // ammax_db.wu
+	AAMMAXDBVU: 0x070E1 << 15, // ammax_db.du
+	AAMMINDBWU: 0x070E2 << 15, // ammin_db.wu
+	AAMMINDBVU: 0x070E3 << 15, // ammin_db.du
+}
+
+func (c *ctxt0) specialFpMovInst(a obj.As, fclass int, tclass int) uint32 {
+	switch a {
+	case AMOVV:
+		switch fclass {
+		case C_REG:
+			switch tclass {
+			case C_FREG:
+				return 0x452a << 10 // movgr2fr.d
+			case C_FCCREG:
+				return 0x4536 << 10 // movgr2cf
+			case C_FCSRREG:
+				return 0x4530 << 10 // movgr2fcsr
+			}
+		case C_FREG:
+			switch tclass {
+			case C_REG:
+				return 0x452e << 10 // movfr2gr.d
+			case C_FCCREG:
+				return 0x4534 << 10 // movfr2cf
+			}
+		case C_FCCREG:
+			switch tclass {
+			case C_REG:
+				return 0x4537 << 10 // movcf2gr
+			case C_FREG:
+				return 0x4535 << 10 // movcf2fr
+			}
+		case C_FCSRREG:
+			switch tclass {
+			case C_REG:
+				return 0x4532 << 10 // movfcsr2gr
+			}
+		}
+
+	case AMOVW:
+		switch fclass {
+		case C_REG:
+			switch tclass {
+			case C_FREG:
+				return 0x4529 << 10 // movgr2fr.w
+			}
+		case C_FREG:
+			switch tclass {
+			case C_REG:
+				return 0x452d << 10 // movfr2gr.s
+			}
+		}
+	}
+
+	c.ctxt.Diag("bad class combination: %s %d,%d\n", a, fclass, tclass)
+
+	return 0
+}
+
+func (c *ctxt0) specialLsxMovInst(a obj.As, fReg, tReg int16, offset_flag bool) (op_code, index_mask uint32) {
+	farng := (fReg >> EXT_TYPE_SHIFT) & EXT_TYPE_MASK
+	tarng := (tReg >> EXT_TYPE_SHIFT) & EXT_TYPE_MASK
+	fclass := c.rclass(fReg)
+	tclass := c.rclass(tReg)
+
+	switch fclass | (tclass << 16) {
+	case C_REG | (C_ELEM << 16):
+		// vmov Rn, Vd.<T>[index]
+		switch a {
+		case AVMOVQ:
+			switch tarng {
+			case ARNG_B:
+				return (0x01CBAE << 14), 0xf // vinsgr2vr.b
+			case ARNG_H:
+				return (0x03975E << 13), 0x7 // vinsgr2vr.h
+			case ARNG_W:
+				return (0x072EBE << 12), 0x3 // vinsgr2vr.w
+			case ARNG_V:
+				return (0x0E5D7E << 11), 0x1 // vinsgr2vr.d
+			}
+		case AXVMOVQ:
+			switch tarng {
+			case ARNG_W:
+				return (0x03B75E << 13), 0x7 // xvinsgr2vr.w
+			case ARNG_V:
+				return (0x076EBE << 12), 0x3 // xvinsgr2vr.d
+			}
+		}
+
+	case C_ELEM | (C_REG << 16):
+		// vmov Vd.<T>[index], Rn
+		switch a {
+		case AVMOVQ:
+			switch farng {
+			case ARNG_B:
+				return (0x01CBBE << 14), 0xf // vpickve2gr.b
+			case ARNG_H:
+				return (0x03977E << 13), 0x7 // vpickve2gr.h
+			case ARNG_W:
+				return (0x072EFE << 12), 0x3 // vpickve2gr.w
+			case ARNG_V:
+				return (0x0E5DFE << 11), 0x1 // vpickve2gr.d
+			case ARNG_BU:
+				return (0x01CBCE << 14), 0xf // vpickve2gr.bu
+			case ARNG_HU:
+				return (0x03979E << 13), 0x7 // vpickve2gr.hu
+			case ARNG_WU:
+				return (0x072F3E << 12), 0x3 // vpickve2gr.wu
+			case ARNG_VU:
+				return (0x0E5E7E << 11), 0x1 // vpickve2gr.du
+			}
+		case AXVMOVQ:
+			switch farng {
+			case ARNG_W:
+				return (0x03B77E << 13), 0x7 // xvpickve2gr.w
+			case ARNG_V:
+				return (0x076EFE << 12), 0x3 // xvpickve2gr.d
+			case ARNG_WU:
+				return (0x03B79E << 13), 0x7 // xvpickve2gr.wu
+			case ARNG_VU:
+				return (0x076F3E << 12), 0x3 // xvpickve2gr.du
+			}
+		}
+
+	case C_REG | (C_ARNG << 16):
+		switch {
+		case offset_flag:
+			// vmov offset(vj), vd.<T>
+			switch a {
+			case AVMOVQ:
+				switch tarng {
+				case ARNG_16B:
+					return (0xC2 << 22), 0x0 // vldrepl.b
+				case ARNG_8H:
+					return (0x182 << 21), 0x0 // vldrepl.h
+				case ARNG_4W:
+					return (0x302 << 20), 0x0 // vldrepl.w
+				case ARNG_2V:
+					return (0x602 << 19), 0x0 // vldrepl.d
+				}
+			case AXVMOVQ:
+				switch tarng {
+				case ARNG_32B:
+					return (0xCA << 22), 0x0 // xvldrepl.b
+				case ARNG_16H:
+					return (0x192 << 21), 0x0 // xvldrepl.h
+				case ARNG_8W:
+					return (0x322 << 20), 0x0 // xvldrepl.w
+				case ARNG_4V:
+					return (0x642 << 19), 0x0 // xvldrepl.d
+				}
+			}
+		default:
+			// vmov Rn, Vd.<T>
+			switch a {
+			case AVMOVQ:
+				switch tarng {
+				case ARNG_16B:
+					return (0x1CA7C0 << 10), 0x0 // vreplgr2vr.b
+				case ARNG_8H:
+					return (0x1CA7C1 << 10), 0x0 // vreplgr2vr.h
+				case ARNG_4W:
+					return (0x1CA7C2 << 10), 0x0 // vreplgr2vr.w
+				case ARNG_2V:
+					return (0x1CA7C3 << 10), 0x0 // vreplgr2vr.d
+				}
+			case AXVMOVQ:
+				switch tarng {
+				case ARNG_32B:
+					return (0x1DA7C0 << 10), 0x0 // xvreplgr2vr.b
+				case ARNG_16H:
+					return (0x1DA7C1 << 10), 0x0 // xvreplgr2vr.h
+				case ARNG_8W:
+					return (0x1DA7C2 << 10), 0x0 // xvreplgr2vr.w
+				case ARNG_4V:
+					return (0x1DA7C3 << 10), 0x0 // xvreplgr2vr.d
+				}
+			}
+		}
+
+	case C_XREG | (C_ARNG << 16):
+		// vmov  xj, xd.<T>
+		switch a {
+		case AVMOVQ:
+			return 0, 0 // unsupported op
+		case AXVMOVQ:
+			switch tarng {
+			case ARNG_32B:
+				return (0x1DC1C0 << 10), 0x0 // xvreplve0.b
+			case ARNG_16H:
+				return (0x1DC1E0 << 10), 0x0 // xvreplve0.h
+			case ARNG_8W:
+				return (0x1DC1F0 << 10), 0x0 // xvreplve0.w
+			case ARNG_4V:
+				return (0x1DC1F8 << 10), 0x0 // xvreplve0.d
+			case ARNG_2Q:
+				return (0x1DC1FC << 10), 0x0 // xvreplve0.q
+			}
+		}
+
+	case C_XREG | (C_ELEM << 16):
+		// vmov  xj, xd.<T>[index]
+		switch a {
+		case AVMOVQ:
+			return 0, 0 // unsupported op
+		case AXVMOVQ:
+			switch tarng {
+			case ARNG_W:
+				return (0x03B7FE << 13), 0x7 // xvinsve0.w
+			case ARNG_V:
+				return (0x076FFE << 12), 0x3 // xvinsve0.d
+			}
+		}
+
+	case C_ELEM | (C_XREG << 16):
+		// vmov  xj.<T>[index], xd
+		switch a {
+		case AVMOVQ:
+			return 0, 0 // unsupported op
+		case AXVMOVQ:
+			switch farng {
+			case ARNG_W:
+				return (0x03B81E << 13), 0x7 // xvpickve.w
+			case ARNG_V:
+				return (0x07703E << 12), 0x3 // xvpickve.d
+			}
+		}
+
+	case C_ELEM | (C_ARNG << 16):
+		// vmov  vj.<T>[index], vd.<T>
+		switch a {
+		case AVMOVQ:
+			switch int32(farng) | (int32(tarng) << 16) {
+			case int32(ARNG_B) | (int32(ARNG_16B) << 16):
+				return (0x01CBDE << 14), 0xf // vreplvei.b
+			case int32(ARNG_H) | (int32(ARNG_8H) << 16):
+				return (0x0397BE << 13), 0x7 // vreplvei.h
+			case int32(ARNG_W) | (int32(ARNG_4W) << 16):
+				return (0x072F7E << 12), 0x3 // vreplvei.w
+			case int32(ARNG_V) | (int32(ARNG_2V) << 16):
+				return (0x0E5EFE << 11), 0x1 // vreplvei.d
+			}
+		case AXVMOVQ:
+			return 0, 0 // unsupported op
+		}
+	}
+
+	return 0, 0
 }

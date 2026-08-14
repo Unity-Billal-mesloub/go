@@ -22,27 +22,9 @@ TEXT _rt0_riscv64_lib(SB),NOSPLIT,$224
 	MOV	A0, _rt0_riscv64_lib_argc<>(SB)
 	MOV	A1, _rt0_riscv64_lib_argv<>(SB)
 
-	// Synchronous initialization.
-	MOV	$runtime·libpreinit(SB), T1
+	MOV	$runtime·libInit(SB), T1
 	JALR	RA, T1
 
-	// Create a new thread to do the runtime initialization and return.
-	MOV	_cgo_sys_thread_create(SB), T1
-	BEQZ	T1, nocgo
-	MOV	$_rt0_riscv64_lib_go(SB), A0
-	MOV	$0, A1
-	JALR	RA, T1
-	JMP	restore
-
-nocgo:
-	MOV	$0x800000, A0                     // stacksize = 8192KB
-	MOV	$_rt0_riscv64_lib_go(SB), A1
-	MOV	A0, 8(X2)
-	MOV	A1, 16(X2)
-	MOV	$runtime·newosproc0(SB), T1
-	JALR	RA, T1
-
-restore:
 	// Restore callee-save registers, along with X1 (LR).
 	MOV	(8*3)(X2), X1
 	RESTORE_GPR((8*4))
@@ -50,7 +32,7 @@ restore:
 
 	RET
 
-TEXT _rt0_riscv64_lib_go(SB),NOSPLIT,$0
+TEXT runtime·rt0_lib_go<ABIInternal>(SB),NOSPLIT,$0
 	MOV	_rt0_riscv64_lib_argc<>(SB), A0
 	MOV	_rt0_riscv64_lib_argv<>(SB), A1
 	MOV	$runtime·rt0_go(SB), T0
@@ -119,6 +101,7 @@ nocgo:
 	ADD	$16, X2
 
 	// start this M
+	CALL	runtime·stackcheck(SB)	// fault if stack check is wrong
 	CALL	runtime·mstart(SB)
 
 	WORD $0 // crash if reached
@@ -292,15 +275,16 @@ TEXT runtime·morestack_noctxt(SB),NOSPLIT|NOFRAME,$0-0
 	MOV	ZERO, CTXT
 	JMP	runtime·morestack(SB)
 
-// AES hashing not implemented for riscv64
-TEXT runtime·memhash<ABIInternal>(SB),NOSPLIT|NOFRAME,$0-32
-	JMP	runtime·memhashFallback<ABIInternal>(SB)
-TEXT runtime·strhash<ABIInternal>(SB),NOSPLIT|NOFRAME,$0-24
-	JMP	runtime·strhashFallback<ABIInternal>(SB)
-TEXT runtime·memhash32<ABIInternal>(SB),NOSPLIT|NOFRAME,$0-24
-	JMP	runtime·memhash32Fallback<ABIInternal>(SB)
-TEXT runtime·memhash64<ABIInternal>(SB),NOSPLIT|NOFRAME,$0-24
-	JMP	runtime·memhash64Fallback<ABIInternal>(SB)
+// check that SP is in range [g->stack.lo, g->stack.hi]
+TEXT runtime·stackcheck(SB), NOSPLIT|NOFRAME, $0-0
+	MOV	(g_stack+stack_hi)(g), A0
+	BGEU	A0, X2, 2(PC)
+	CALL	runtime·abort(SB)
+
+	MOV	(g_stack+stack_lo)(g), A0
+	BGTU	X2, A0, 2(PC)
+	CALL	runtime·abort(SB)
+	RET
 
 // restore state from Gobuf; longjmp
 
@@ -380,7 +364,11 @@ TEXT gosave_systemstack_switch<>(SB),NOSPLIT|NOFRAME,$0
 TEXT ·asmcgocall_no_g(SB),NOSPLIT,$0-16
 	MOV	fn+0(FP), X11
 	MOV	arg+8(FP), X10
+	MOV	X2, X9		// save SP in X9 (callee-saved in C ABI)
+	ANDI	$~15, X2	// align SP to 16 bytes per C ABI
+	MOV	X0, X8		// clear frame pointer register (see asmcgocall)
 	JALR	RA, (X11)
+	MOV	X9, X2
 	RET
 
 // func asmcgocall(fn, arg unsafe.Pointer) int32
@@ -398,6 +386,7 @@ TEXT ·asmcgocall(SB),NOSPLIT,$0-20
 	// We get called to create new OS threads too, and those
 	// come in on the m->g0 stack already. Or we might already
 	// be on the m->gsignal stack.
+	BEQZ	g, nosave
 	MOV	g_m(g), X6
 	MOV	m_gsignal(X6), X7
 	BEQ	X7, g, g0
@@ -411,6 +400,7 @@ TEXT ·asmcgocall(SB),NOSPLIT,$0-20
 
 	// Now on a scheduling stack (a pthread-created stack).
 g0:
+	ANDI	$~15, X2	// align SP to 16 bytes per C ABI
 	// Save room for two of our pointers.
 	SUB	$16, X2
 	MOV	X9, 0(X2)	// save old g on stack
@@ -418,6 +408,14 @@ g0:
 	SUB	X8, X9, X8
 	MOV	X8, 8(X2)	// save depth in old g stack (can't just save SP, as stack might be copied during a callback)
 
+	// Clear the frame pointer register before calling into C.
+	// At least some C unwinder does frame pointer unwinding.
+	// As Go currently doesn't use frame pointer on RISCV64,
+	// the C unwinder may see garbage value and may crash.
+	// Zero the frame pointer to tell the unwinder to stop
+	// (it is a stack switch anyway).
+	// If we enable frame pointers in Go, revisit this.
+	MOV	X0, X8
 	JALR	RA, (X11)
 
 	// Restore g, stack pointer. X10 is return value.
@@ -428,6 +426,22 @@ g0:
 	SUB	X6, X5, X6
 	MOV	X6, X2
 
+	MOVW	X10, ret+16(FP)
+	RET
+
+nosave:
+	// Running on a system stack, perhaps even without a g.
+	// Having no g can happen during thread creation or thread teardown.
+	MOV	fn+0(FP), X11
+	MOV	arg+8(FP), X10
+	MOV	X2, X8
+	ANDI	$~15, X2	// align SP to 16 bytes per C ABI
+	SUB	$16, X2
+	MOV	ZERO, 0(X2)	// Where above code stores g, in case someone looks during debugging.
+	MOV	X8, 8(X2)	// Save original stack pointer.
+	MOV	X0, X8		// Clear frame pointer (see above)
+	JALR	RA, (X11)
+	MOV	8(X2), X2	// Restore stack pointer.
 	MOVW	X10, ret+16(FP)
 	RET
 
@@ -740,11 +754,6 @@ TEXT runtime·setg(SB), NOSPLIT, $0-8
 	MOV	gg+0(FP), g
 	// This only happens if iscgo, so jump straight to save_g
 	CALL	runtime·save_g(SB)
-	RET
-
-TEXT ·checkASM(SB),NOSPLIT,$0-1
-	MOV	$1, T0
-	MOV	T0, ret+0(FP)
 	RET
 
 // spillArgs stores return values from registers to a *internal/abi.RegArgs in X25.

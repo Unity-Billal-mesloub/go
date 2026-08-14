@@ -68,7 +68,7 @@ var defercalc int
 
 // RoundUp rounds o to a multiple of r, r is a power of 2.
 func RoundUp(o int64, r int64) int64 {
-	if r < 1 || r > 8 || r&(r-1) != 0 {
+	if r < 1 || r > 16 || r&(r-1) != 0 {
 		base.Fatalf("Round %d", r)
 	}
 	return (o + r - 1) &^ (r - 1)
@@ -366,6 +366,12 @@ func CalcSize(t *Type) {
 		t.intRegs = 1
 		CheckSize(t.Elem())
 		CheckSize(t.Key())
+		if t.Elem().width >= 1<<31 {
+			base.Errorf("map element type too large")
+		}
+		if t.Key().width >= 1<<31 {
+			base.Errorf("map key type too large")
+		}
 		t.setAlg(ANOEQ)
 		t.ptrBytes = int64(PtrSize)
 
@@ -463,10 +469,10 @@ func simdify(st *Type, isTag bool) {
 	st.align = 8
 	st.alg = ANOALG // not comparable with ==
 	st.intRegs = 0
-	st.isSIMD = true
+	st.flags |= typeIsSIMD
 	if isTag {
 		st.width = 0
-		st.isSIMDTag = true
+		st.flags |= typeIsSIMDTag
 		st.floatRegs = 0
 	} else {
 		st.floatRegs = 1
@@ -486,6 +492,9 @@ func CalcStructSize(t *Type) {
 		case sym.Name == "align64" && isAtomicStdPkg(sym.Pkg):
 			maxAlign = 8
 
+		case sym.Name == "align128" && isAtomicStdPkg(sym.Pkg):
+			maxAlign = 16
+
 		case buildcfg.Experiment.SIMD && (sym.Pkg.Path == "simd/archsimd") && len(t.Fields()) >= 1:
 			// This gates the experiment -- without it, no user-visible types can be "simd".
 			// The SSA-visible SIMD types remain.
@@ -497,6 +506,12 @@ func CalcStructSize(t *Type) {
 				simdify(t, true)
 				return
 			case "v512":
+				simdify(t, true)
+				return
+			case "vsve":
+				simdify(t, true)
+				return
+			case "psve":
 				simdify(t, true)
 				return
 			}
@@ -578,9 +593,17 @@ func CalcStructSize(t *Type) {
 		}
 	}
 
-	if len(t.Fields()) >= 1 && t.Fields()[0].Type.isSIMDTag {
+	if len(t.Fields()) >= 1 && t.Fields()[0].Type.flags&typeIsSIMDTag != 0 {
 		// this catches `type Foo simd.Whatever` -- Foo is also SIMD.
-		simdify(t, false)
+		if t.Fields()[0].Type.Sym().Name == "psve" {
+			simdify(t, false)
+			// Force it to be passed via memory for now.
+			// TODO: support p registers in the ABI.
+			t.intRegs = math.MaxUint8
+			t.floatRegs = math.MaxUint8
+		} else {
+			simdify(t, false)
+		}
 	}
 }
 

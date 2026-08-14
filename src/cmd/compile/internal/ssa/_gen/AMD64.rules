@@ -27,15 +27,10 @@
 (Div8u x y) => (Select0 (DIVWU (ZeroExt8to16 x) (ZeroExt8to16 y)))
 (Div(32|64)F ...) => (DIVS(S|D) ...)
 
-(Select0 (Add64carry x y c)) =>
-	(Select0 <typ.UInt64> (ADCQ x y (Select1 <types.TypeFlags> (NEGLflags c))))
-(Select1 (Add64carry x y c)) =>
-	(NEGQ <typ.UInt64> (SBBQcarrymask <typ.UInt64> (Select1 <types.TypeFlags> (ADCQ x y (Select1 <types.TypeFlags> (NEGLflags c))))))
-(Select0 (Sub64borrow x y c)) =>
-	(Select0 <typ.UInt64> (SBBQ x y (Select1 <types.TypeFlags> (NEGLflags c))))
-(Select1 (Sub64borrow x y c)) =>
-	(NEGQ <typ.UInt64> (SBBQcarrymask <typ.UInt64> (Select1 <types.TypeFlags> (SBBQ x y (Select1 <types.TypeFlags> (NEGLflags c))))))
-
+(Select0 (Add64carry x y c)) => (Select0 (ADCQ x y (Select1 <types.TypeFlags> (NEGLflags c))))
+(Select1 (Add64carry x y c)) => (MOVBQZX (SETB <types.Types[types.TUINT8]> (Select1 <types.TypeFlags> (ADCQ x y (Select1 <types.TypeFlags> (NEGLflags c))))))
+(Select0 (Sub64borrow x y c)) => (Select0 (SBBQ x y (Select1 <types.TypeFlags> (NEGLflags c))))
+(Select1 (Sub64borrow x y c)) => (MOVBQZX (SETB <types.Types[types.TUINT8]> (Select1 <types.TypeFlags> (SBBQ x y (Select1 <types.TypeFlags> (NEGLflags c))))))
 // Optimize ADCQ and friends
 (ADCQ x (MOVQconst [c]) carry) && is32Bit(c) => (ADCQconst x [int32(c)] carry)
 (ADCQ x y (FlagEQ)) => (ADDQcarry x y)
@@ -46,10 +41,20 @@
 (SBBQconst x [c] (FlagEQ)) => (SUBQconstborrow x [c])
 (SUBQborrow x (MOVQconst [c])) && is32Bit(c) => (SUBQconstborrow x [int32(c)])
 (Select1 (NEGLflags (MOVQconst [0]))) => (FlagEQ)
-(Select1 (NEGLflags (NEGQ (SBBQcarrymask x)))) => x
+(Select1 (NEGLflags (MOVBQZX (SETB x)))) => x
+// Absorb InvertFlags into ADCQ/SBBQ: CF(InvertFlags(f)) = SETA(f), so
+// re-materialize the carry/borrow through the SETA+NEGLflags path.
+(ADCQ x y (InvertFlags f)) => (ADCQ x y (Select1 <types.TypeFlags> (NEGLflags (MOVBQZX <types.Types[types.TUINT32]> (SETA <types.Types[types.TUINT8]> f)))))
+(ADCQconst x [c] (InvertFlags f)) => (ADCQconst x [c] (Select1 <types.TypeFlags> (NEGLflags (MOVBQZX <types.Types[types.TUINT32]> (SETA <types.Types[types.TUINT8]> f)))))
+(SBBQ x y (InvertFlags f)) => (SBBQ x y (Select1 <types.TypeFlags> (NEGLflags (MOVBQZX <types.Types[types.TUINT32]> (SETA <types.Types[types.TUINT8]> f)))))
+(SBBQconst x [c] (InvertFlags f)) => (SBBQconst x [c] (Select1 <types.TypeFlags> (NEGLflags (MOVBQZX <types.Types[types.TUINT32]> (SETA <types.Types[types.TUINT8]> f)))))
+// ADDQ/SUBQ an from a carry flag into ADCQ/SBBQ
+// TODO: maybe add ADCL and SBBL ?
+(ADDQ x (MOVBQZX (SETB flags))) => (Select0 (ADCQconst [0] x flags))
+(SUBQ x (MOVBQZX (SETB flags))) => (Select0 (SBBQconst [0] x flags))
 
-
-(Mul64uhilo ...) => (MULQU2 ...)
+(Mul64uhilo x y) && buildcfg.GOAMD64 >= 3 => (MULXQ x y)
+(Mul64uhilo x y) && buildcfg.GOAMD64 <  3 => (MULQU2 x y)
 (Div128u ...) => (DIVQU2 ...)
 
 (Avg64u ...) => (AVGQU ...)
@@ -400,6 +405,14 @@
 (CondSelect <t> x y (SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) cond)) && is16BitInt(t)
     => (CMOVW(EQ|NE|LT|GT|LE|GE|HI|CS|CC|LS|EQF|NEF|GTF|GEF) y x cond)
 
+// Float min/max comparison-select idioms lower to a single instruction.
+// These ops carry their semantics directly (no embedded comparison), so the
+// lowering always triggers.
+(Min64FSel ...) => (MINSD ...)
+(Min32FSel ...) => (MINSS ...)
+(Max64FSel ...) => (MAXSD ...)
+(Max32FSel ...) => (MAXSS ...)
+
 (CondSelect <t> x y check) && !check.Type.IsFlags() && check.Type.Size() == 8 && (is64BitInt(t) || isPtr(t))
     => (CMOVQNE y x (CMPQconst [0] check))
 (CondSelect <t> x y check) && !check.Type.IsFlags() && check.Type.Size() == 8 && is32BitInt(t)
@@ -519,6 +532,22 @@
 (Select1     (AddTupleFirst32   _ tuple)) => (Select1 tuple)
 (Select0 <t> (AddTupleFirst64 val tuple)) => (ADDQ val (Select0 <t> tuple))
 (Select1     (AddTupleFirst64   _ tuple)) => (Select1 tuple)
+
+(Select1 xadd:(XADDLlock [off] {sym} val ptr mem)) && xadd.Uses == 1 && clobber(xadd) => (ADDLlock [off] {sym} ptr val mem)
+(Select1 xadd:(XADDQlock [off] {sym} val ptr mem)) && xadd.Uses == 1 && clobber(xadd) => (ADDQlock [off] {sym} ptr val mem)
+// FIXME: remove when we teach rewrite to remove dead values
+(AddTupleFirst32 _ _) && v.Uses == 0 => (Invalid)
+(AddTupleFirst64 _ _) && v.Uses == 0 => (Invalid)
+
+// Atomic subtracts.
+(ADDLlock [off] {sym} ptr n:(NEGL val) mem) && n.Uses == 1 => (SUBLlock [off] {sym} ptr val mem)
+(ADDQlock [off] {sym} ptr n:(NEGQ val) mem) && n.Uses == 1 => (SUBQlock [off] {sym} ptr val mem)
+
+// Atomic inc and dec.
+(ADDLlock [off] {sym} ptr (MOVLconst [1]) mem) => (INCLlock [off] {sym} ptr mem)
+(ADDQlock [off] {sym} ptr (MOVQconst [1]) mem) => (INCQlock [off] {sym} ptr mem)
+(ADDLlock [off] {sym} ptr (MOVLconst [-1]) mem) => (DECLlock [off] {sym} ptr mem)
+(ADDQlock [off] {sym} ptr (MOVQconst [-1]) mem) => (DECQlock [off] {sym} ptr mem)
 
 // Atomic compare and swap.
 (AtomicCompareAndSwap32 ptr old new_ mem) => (CMPXCHGLlock ptr old new_ mem)
@@ -830,10 +859,6 @@
 ((SHRB|SARB)const           x [0]) => x
 ((ROLQ|ROLL|ROLW|ROLB)const x [0]) => x
 
-// Multi-register shifts
-(ORQ (SH(R|L)Q lo bits) (SH(L|R)Q hi (NEGQ bits))) => (SH(R|L)DQ lo hi bits)
-(ORQ (SH(R|L)XQ lo bits) (SH(L|R)XQ hi (NEGQ bits))) => (SH(R|L)DQ lo hi bits)
-
 // Note: the word and byte shifts keep the low 5 bits (not the low 4 or 3 bits)
 // because the x86 instructions are defined to use all 5 bits of the shift even
 // for the small shifts. I don't think we'll ever generate a weird shift (e.g.
@@ -912,7 +937,8 @@
 (LEA(Q|L)2 [0] {s} (ADD(Q|L) x x) x) && s == nil => (SHL(Q|L)const [2] x)
 
 // (x + x) << 2 -> x << 3 and similar
-(SHL(Q|L)const [c] (ADD(Q|L) x x))  => (SHL(Q|L)const [c+1] x)
+(SHLQconst [c] (ADDQ x x)) && c < 63 => (SHLQconst [c+1] x)
+(SHLLconst [c] (ADDL x x)) && c < 31 => (SHLLconst [c+1] x)
 
 // reverse ordering of compare instruction
 (SETL (InvertFlags x)) => (SETG x)
@@ -1017,6 +1043,10 @@
 	((ADD|AND|OR|XOR)Qconstmodify [ValAndOff(valoff1).addOffset32(off2)] {sym} base mem)
 ((ADD|AND|OR|XOR)Lconstmodify [valoff1] {sym} (ADDQconst [off2] base) mem) && ValAndOff(valoff1).canAdd32(off2) =>
 	((ADD|AND|OR|XOR)Lconstmodify [ValAndOff(valoff1).addOffset32(off2)] {sym} base mem)
+((ADD|AND|OR|XOR)Wconstmodify [valoff1] {sym} (ADDQconst [off2] base) mem) && ValAndOff(valoff1).canAdd32(off2) =>
+	((ADD|AND|OR|XOR)Wconstmodify [ValAndOff(valoff1).addOffset32(off2)] {sym} base mem)
+((ADD|AND|OR|XOR)Bconstmodify [valoff1] {sym} (ADDQconst [off2] base) mem) && ValAndOff(valoff1).canAdd32(off2) =>
+	((ADD|AND|OR|XOR)Bconstmodify [ValAndOff(valoff1).addOffset32(off2)] {sym} base mem)
 ((ADD|SUB|AND|OR|XOR)Qmodify [off1] {sym} (ADDQconst [off2] base) val mem) && is32Bit(int64(off1)+int64(off2)) =>
 	((ADD|SUB|AND|OR|XOR)Qmodify [off1+off2] {sym} base val mem)
 ((ADD|SUB|AND|OR|XOR)Lmodify [off1] {sym} (ADDQconst [off2] base) val mem) && is32Bit(int64(off1)+int64(off2)) =>
@@ -1074,6 +1104,12 @@
 ((ADD|AND|OR|XOR)Lconstmodify [valoff1] {sym1} (LEAQ [off2] {sym2} base) mem)
 	&& ValAndOff(valoff1).canAdd32(off2) && canMergeSym(sym1, sym2) =>
 	((ADD|AND|OR|XOR)Lconstmodify [ValAndOff(valoff1).addOffset32(off2)] {mergeSym(sym1,sym2)} base mem)
+((ADD|AND|OR|XOR)Wconstmodify [valoff1] {sym1} (LEAQ [off2] {sym2} base) mem)
+	&& ValAndOff(valoff1).canAdd32(off2) && canMergeSym(sym1, sym2) =>
+	((ADD|AND|OR|XOR)Wconstmodify [ValAndOff(valoff1).addOffset32(off2)] {mergeSym(sym1,sym2)} base mem)
+((ADD|AND|OR|XOR)Bconstmodify [valoff1] {sym1} (LEAQ [off2] {sym2} base) mem)
+	&& ValAndOff(valoff1).canAdd32(off2) && canMergeSym(sym1, sym2) =>
+	((ADD|AND|OR|XOR)Bconstmodify [ValAndOff(valoff1).addOffset32(off2)] {mergeSym(sym1,sym2)} base mem)
 ((ADD|SUB|AND|OR|XOR)Qmodify [off1] {sym1} (LEAQ [off2] {sym2} base) val mem)
 	&& is32Bit(int64(off1)+int64(off2)) && canMergeSym(sym1, sym2) =>
 	((ADD|SUB|AND|OR|XOR)Qmodify [off1+off2] {mergeSym(sym1,sym2)} base val mem)
@@ -1472,6 +1508,17 @@
 (MOVLstore [off] {sym} ptr a:((ADD|AND|OR|XOR)Lconst [c] l:(MOVLload [off] {sym} ptr2 mem)) mem)
 	&& isSamePtr(ptr, ptr2) && a.Uses == 1 && l.Uses == 1 && clobber(l, a) =>
 	((ADD|AND|OR|XOR)Lconstmodify {sym} [makeValAndOff(int32(c),off)] ptr mem)
+// Sub-word read-modify-write. The narrow store keeps only the low 8/16 bits of
+// the 32-bit result, so ADDB/ADDW etc. with the same constant is equivalent.
+// The constant is restricted to an 8-bit immediate: it keeps every form we emit
+// encodable as imm8 (or INC/DEC), which also avoids the 16-bit immediates that
+// cause length-changing-prefix stalls.
+(MOVWstore [off] {sym} ptr a:((ADD|AND|OR|XOR)Lconst [c] l:(MOVWload [off] {sym} ptr2 mem)) mem)
+	&& isSamePtr(ptr, ptr2) && a.Uses == 1 && l.Uses == 1 && c == int32(int8(c)) && clobber(l, a) =>
+	((ADD|AND|OR|XOR)Wconstmodify {sym} [makeValAndOff(int32(c),off)] ptr mem)
+(MOVBstore [off] {sym} ptr a:((ADD|AND|OR|XOR)Lconst [c] l:(MOVBload [off] {sym} ptr2 mem)) mem)
+	&& isSamePtr(ptr, ptr2) && a.Uses == 1 && l.Uses == 1 && c == int32(int8(c)) && clobber(l, a) =>
+	((ADD|AND|OR|XOR)Bconstmodify {sym} [makeValAndOff(int32(c),off)] ptr mem)
 
 // float <-> int register moves, with no conversion.
 // These come up when compiling math.{Float{32,64}bits,Float{32,64}frombits}.
@@ -1501,6 +1548,8 @@
 
 // Detect FMA
 (ADDS(S|D) (MULS(S|D) x y) z) && buildcfg.GOAMD64 >= 3 && z.Block.Func.useFMA(v) => (VFMADD231S(S|D) z x y)
+(SUBS(S|D) (MULS(S|D) x y) z) && buildcfg.GOAMD64 >= 3 && z.Block.Func.useFMA(v) => (VFMSUB231S(S|D) z x y)
+(SUBS(S|D) x (MULS(S|D) y z)) && buildcfg.GOAMD64 >= 3 && z.Block.Func.useFMA(v) => (VFNMADD231S(S|D) x y z)
 
 // Redirect stores to use the other register set.
 (MOVQstore  [off] {sym} ptr (MOVQf2i val) mem) => (MOVSDstore [off] {sym} ptr val mem)
@@ -1737,6 +1786,72 @@
 (ZeroSIMD <t>) && t.Size() == 32 => (Zero256 <t>)
 (ZeroSIMD <t>) && t.Size() == 64 => (Zero512 <t>)
 
+// optimize x.IsNaN().Or(y.IsNaN())
+// do these before the mask rewrites
+(VPOR128 (VCMPP(S|D)128 [3] x x) (VCMPP(S|D)128 [3] y y)) => (VCMPP(S|D)128 [3] x y)
+(VPOR256 (VCMPP(S|D)256 [3] x x) (VCMPP(S|D)256 [3] y y)) => (VCMPP(S|D)256 [3] x y)
+(VPORD512 (VPMOVMToVec32x16 (VCMPPS512 [3] x x)) (VPMOVMToVec32x16 (VCMPPS512 [3] y y))) =>
+	(VPMOVMToVec32x16 (VCMPPS512 [3] x y))
+(VPORD512 (VPMOVMToVec64x8  (VCMPPD512 [3] x x)) (VPMOVMToVec64x8  (VCMPPD512 [3] y y))) =>
+	(VPMOVMToVec64x8  (VCMPPD512 [3] x y))
+
+// Include these rules because you never know about rewrite order
+(KANDB (VCMPPD512 [3] x x) (VCMPPD512 [3] y y)) => (VCMPPD512 [3] x x) // 512 = 64x8 -> KANDB
+(KANDW (VCMPPS512 [3] x x) (VCMPPS512 [3] y y)) => (VCMPPS512 [3] x y) // 512 = 32x16 -> KANDW
+
+// These larger simplifying rules must come before the smaller simplifying rules that might break them).
+// Rewrite rules for binary logical mask operations that apply to 8-bit elements (B, for bytes) of 128, 256, and 512-bit vectors
+(VPAND128 (VPMOVMToVec8x16 x) (VPMOVMToVec8x16 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec8x16 (KANDW x y))
+(VPAND256 (VPMOVMToVec8x32 x) (VPMOVMToVec8x32 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec8x32 (KANDD x y))
+(VPANDD512 (VPMOVMToVec8x64 x) (VPMOVMToVec8x64 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec8x64 (KANDQ x y))
+
+(VPOR128 (VPMOVMToVec8x16 x) (VPMOVMToVec8x16 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec8x16 (KORW x y))
+(VPOR256 (VPMOVMToVec8x32 x) (VPMOVMToVec8x32 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec8x32 (KORD x y))
+(VPORD512 (VPMOVMToVec8x64 x) (VPMOVMToVec8x64 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec8x64 (KORQ x y))
+
+(VPXOR128 (VPMOVMToVec8x16 x) (VPMOVMToVec8x16 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec8x16 (KXORW x y))
+(VPXOR256 (VPMOVMToVec8x32 x) (VPMOVMToVec8x32 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec8x32 (KXORD x y))
+(VPXORD512 (VPMOVMToVec8x64 x) (VPMOVMToVec8x64 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec8x64 (KXORQ x y))
+
+// Rewrite rules for binary logical mask operations that apply to 16-bit elements (W, for words) of 128, 256, and 512-bit vectors
+(VPAND128 (VPMOVMToVec16x8 x) (VPMOVMToVec16x8 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec16x8 (KANDB x y))
+(VPAND256 (VPMOVMToVec16x16 x) (VPMOVMToVec16x16 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec16x16 (KANDW x y))
+(VPANDD512 (VPMOVMToVec16x32 x) (VPMOVMToVec16x32 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec16x32 (KANDD x y))
+
+(VPOR128 (VPMOVMToVec16x8 x) (VPMOVMToVec16x8 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec16x8 (KORB x y))
+(VPOR256 (VPMOVMToVec16x16 x) (VPMOVMToVec16x16 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec16x16 (KORW x y))
+(VPORD512 (VPMOVMToVec16x32 x) (VPMOVMToVec16x32 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec16x32 (KORD x y))
+
+(VPXOR128 (VPMOVMToVec16x8 x) (VPMOVMToVec16x8 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec16x8 (KXORB x y))
+(VPXOR256 (VPMOVMToVec16x16 x) (VPMOVMToVec16x16 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec16x16 (KXORW x y))
+(VPXORD512 (VPMOVMToVec16x32 x) (VPMOVMToVec16x32 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec16x32 (KXORD x y))
+
+// Rewrite rules for binary logical mask operations that apply to 32-bit elements (D, for doublewords) of 128, 256, and 512-bit vectors
+(VPAND128 (VPMOVMToVec32x4 x) (VPMOVMToVec32x4 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec32x4 (KANDB x y))
+(VPAND256 (VPMOVMToVec32x8 x) (VPMOVMToVec32x8 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec32x8 (KANDB x y))
+(VPANDD512 (VPMOVMToVec32x16 x) (VPMOVMToVec32x16 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec32x16 (KANDW x y))
+
+(VPOR128 (VPMOVMToVec32x4 x) (VPMOVMToVec32x4 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec32x4 (KORB x y))
+(VPOR256 (VPMOVMToVec32x8 x) (VPMOVMToVec32x8 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec32x8 (KORB x y))
+(VPORD512 (VPMOVMToVec32x16 x) (VPMOVMToVec32x16 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec32x16 (KORW x y))
+
+(VPXOR128 (VPMOVMToVec32x4 x) (VPMOVMToVec32x4 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec32x4 (KXORB x y))
+(VPXOR256 (VPMOVMToVec32x8 x) (VPMOVMToVec32x8 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec32x8 (KXORB x y))
+(VPXORD512 (VPMOVMToVec32x16 x) (VPMOVMToVec32x16 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec32x16 (KXORW x y))
+
+// Rewrite rules for binary logical mask operations that apply to 64-bit elements (Q, for quadwords) of 128, 256, and 512-bit vectors
+(VPAND128 (VPMOVMToVec64x2 x) (VPMOVMToVec64x2 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec64x2 (KANDB x y))
+(VPAND256 (VPMOVMToVec64x4 x) (VPMOVMToVec64x4 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec64x4 (KANDB x y))
+(VPANDD512 (VPMOVMToVec64x8 x) (VPMOVMToVec64x8 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec64x8 (KANDB x y))
+
+(VPOR128 (VPMOVMToVec64x2 x) (VPMOVMToVec64x2 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec64x2 (KORB x y))
+(VPOR256 (VPMOVMToVec64x4 x) (VPMOVMToVec64x4 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec64x4 (KORB x y))
+(VPORD512 (VPMOVMToVec64x8 x) (VPMOVMToVec64x8 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec64x8 (KORB x y))
+
+(VPXOR128 (VPMOVMToVec64x2 x) (VPMOVMToVec64x2 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec64x2 (KXORB x y))
+(VPXOR256 (VPMOVMToVec64x4 x) (VPMOVMToVec64x4 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec64x4 (KXORB x y))
+(VPXORD512 (VPMOVMToVec64x8 x) (VPMOVMToVec64x8 y)) && v.Block.CPUfeatures.hasFeature(CPUavx512) => (VPMOVMToVec64x8 (KXORB x y))
+
 (VPMOVVec8x16ToM (VPMOVMToVec8x16 x)) => x
 (VPMOVVec8x32ToM (VPMOVMToVec8x32 x)) => x
 (VPMOVVec8x64ToM (VPMOVMToVec8x64 x)) => x
@@ -1799,6 +1914,19 @@
 (VMOVDQUload(128|256|512) [off1] {sym1} x:(LEAQ [off2] {sym2} base) mem) && is32Bit(int64(off1)+int64(off2)) && canMergeSym(sym1, sym2) => (VMOVDQUload(128|256|512) [off1+off2] {mergeSym(sym1, sym2)} base mem)
 (VMOVDQUstore(128|256|512) [off1] {sym1} x:(LEAQ [off2] {sym2} base) val mem) && is32Bit(int64(off1)+int64(off2)) && canMergeSym(sym1, sym2) => (VMOVDQUstore(128|256|512) [off1+off2] {mergeSym(sym1, sym2)} base val mem)
 
+// Multiplication of numbers that are the power of 2 can be converted to left shift log(x)
+(VPMULLQ128 x (VPBROADCASTQ128 (VMOVQ (MOVQconst [c])))) && isPowerOfTwo(c) => (VPSLLQ128const [uint8(log64(c))] x)
+(VPMULLQ256 x (VPBROADCASTQ256 (VMOVQ (MOVQconst [c])))) && isPowerOfTwo(c) => (VPSLLQ256const [uint8(log64(c))] x)
+(VPMULLQ512 x (VPBROADCASTQ512 (VMOVQ (MOVQconst [c])))) && isPowerOfTwo(c) => (VPSLLQ512const [uint8(log64(c))] x)
+
+(VPMULLD128 x (VPBROADCASTD128 (VMOVD (MOVLconst [c])))) && isPowerOfTwo(c) => (VPSLLD128const [uint8(log32(int32(c)))] x)
+(VPMULLD256 x (VPBROADCASTD256 (VMOVD (MOVLconst [c])))) && isPowerOfTwo(c) => (VPSLLD256const [uint8(log32(int32(c)))] x)
+(VPMULLD512 x (VPBROADCASTD512 (VMOVD (MOVLconst [c])))) && isPowerOfTwo(c) => (VPSLLD512const [uint8(log32(int32(c)))] x)
+
+(VPMULLW128 x (VPBROADCASTW128 (VMOVQ (MOVLconst [c])))) && isPowerOfTwo(c) => (VPSLLW128const [uint8(log16(int16(c)))] x) // use VMOVQ because VMOVW doesn't exist
+(VPMULLW256 x (VPBROADCASTW256 (VMOVQ (MOVLconst [c])))) && isPowerOfTwo(c) => (VPSLLW256const [uint8(log16(int16(c)))] x)
+(VPMULLW512 x (VPBROADCASTW512 (VMOVQ (MOVLconst [c])))) && isPowerOfTwo(c) => (VPSLLW512const [uint8(log16(int16(c)))] x)
+
 // 2-op VPTEST optimizations
 (SETEQ (VPTEST x:(VPAND(128|256) j k) y)) && x == y && x.Uses == 2 => (SETEQ (VPTEST j k))
 (SETEQ (VPTEST x:(VPAND(D|Q)512 j k) y)) && x == y && x.Uses == 2 => (SETEQ (VPTEST j k))
@@ -1809,10 +1937,54 @@
 (EQ (VPTEST x:(VPANDN(128|256) j k) y) yes no) && x == y && x.Uses == 2 => (ULT (VPTEST k j) yes no) // AndNot has swapped its operand order
 (EQ (VPTEST x:(VPANDN(D|Q)512 j k) y) yes no) && x == y && x.Uses == 2 => (ULT (VPTEST k j) yes no) // AndNot has swapped its operand order
 
-// optimize x.IsNaN().Or(y.IsNaN())
-(VPOR128 (VCMPP(S|D)128 [3] x x) (VCMPP(S|D)128 [3] y y)) => (VCMPP(S|D)128 [3] x y)
-(VPOR256 (VCMPP(S|D)256 [3] x x) (VCMPP(S|D)256 [3] y y)) => (VCMPP(S|D)256 [3] x y)
-(VPORD512 (VPMOVMToVec32x16 (VCMPPS512 [3] x x)) (VPMOVMToVec32x16 (VCMPPS512 [3] y y))) =>
-	(VPMOVMToVec32x16 (VCMPPS512 [3] x y))
-(VPORD512 (VPMOVMToVec64x8  (VCMPPD512 [3] x x)) (VPMOVMToVec64x8  (VCMPPD512 [3] y y))) =>
-	(VPMOVMToVec64x8  (VCMPPD512 [3] x y))
+// remove flags → bool → flags roundtrip
+// Only do it if the flag generating instruction is local otherwise the likelihood flagalloc won't undo this optimization and makes things worse are slim.
+(NE t:(TESTQ x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x) yes no) && t.Block == s.Block => ((EQ|NE|LT|GT|LE|GE|UGT|ULT|UGE|ULE|EQF|NEF|UGT|UGE) flags yes no)
+(NE t:(TESTL x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x) yes no) && t.Block == s.Block => ((EQ|NE|LT|GT|LE|GE|UGT|ULT|UGE|ULE|EQF|NEF|UGT|UGE) flags yes no)
+(NE t:(TESTW x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x) yes no) && t.Block == s.Block => ((EQ|NE|LT|GT|LE|GE|UGT|ULT|UGE|ULE|EQF|NEF|UGT|UGE) flags yes no)
+(NE t:(TESTB            s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)  s) yes no) && t.Block == s.Block => ((EQ|NE|LT|GT|LE|GE|UGT|ULT|UGE|ULE|EQF|NEF|UGT|UGE) flags yes no)
+
+(CMOVQNE yes no t:(TESTQ x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x)) && t.Block == s.Block => (CMOVQ(EQ|NE|LT|GT|LE|GE|HI|CS|CC|LS|EQF|NEF|GTF|GEF) yes no flags)
+(CMOVQNE yes no t:(TESTL x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x)) && t.Block == s.Block => (CMOVQ(EQ|NE|LT|GT|LE|GE|HI|CS|CC|LS|EQF|NEF|GTF|GEF) yes no flags)
+(CMOVQNE yes no t:(TESTW x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x)) && t.Block == s.Block => (CMOVQ(EQ|NE|LT|GT|LE|GE|HI|CS|CC|LS|EQF|NEF|GTF|GEF) yes no flags)
+(CMOVQNE yes no t:(TESTB            s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)  s)) && t.Block == s.Block => (CMOVQ(EQ|NE|LT|GT|LE|GE|HI|CS|CC|LS|EQF|NEF|GTF|GEF) yes no flags)
+
+(CMOVLNE yes no t:(TESTQ x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x)) && t.Block == s.Block => (CMOVL(EQ|NE|LT|GT|LE|GE|HI|CS|CC|LS|EQF|NEF|GTF|GEF) yes no flags)
+(CMOVLNE yes no t:(TESTL x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x)) && t.Block == s.Block => (CMOVL(EQ|NE|LT|GT|LE|GE|HI|CS|CC|LS|EQF|NEF|GTF|GEF) yes no flags)
+(CMOVLNE yes no t:(TESTW x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x)) && t.Block == s.Block => (CMOVL(EQ|NE|LT|GT|LE|GE|HI|CS|CC|LS|EQF|NEF|GTF|GEF) yes no flags)
+(CMOVLNE yes no t:(TESTB            s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)  s)) && t.Block == s.Block => (CMOVL(EQ|NE|LT|GT|LE|GE|HI|CS|CC|LS|EQF|NEF|GTF|GEF) yes no flags)
+
+(CMOVWNE yes no t:(TESTQ x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x)) && t.Block == s.Block => (CMOVW(EQ|NE|LT|GT|LE|GE|HI|CS|CC|LS|EQF|NEF|GTF|GEF) yes no flags)
+(CMOVWNE yes no t:(TESTL x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x)) && t.Block == s.Block => (CMOVW(EQ|NE|LT|GT|LE|GE|HI|CS|CC|LS|EQF|NEF|GTF|GEF) yes no flags)
+(CMOVWNE yes no t:(TESTW x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x)) && t.Block == s.Block => (CMOVW(EQ|NE|LT|GT|LE|GE|HI|CS|CC|LS|EQF|NEF|GTF|GEF) yes no flags)
+(CMOVWNE yes no t:(TESTB            s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)  s)) && t.Block == s.Block => (CMOVW(EQ|NE|LT|GT|LE|GE|HI|CS|CC|LS|EQF|NEF|GTF|GEF) yes no flags)
+
+(SETNE t:(TESTQ x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x)) && t.Block == s.Block => s
+(SETNE t:(TESTL x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x)) && t.Block == s.Block => s
+(SETNE t:(TESTW x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)) x)) && t.Block == s.Block => s
+(SETNE t:(TESTB            s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE|EQF|NEF|GF|GEF) flags)  s)) && t.Block == s.Block => s
+
+(EQ t:(TESTQ x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x) yes no) && t.Block == s.Block => ((NE|EQ|GE|LE|GT|LT|ULE|UGE|ULT|UGT) flags yes no)
+(EQ t:(TESTL x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x) yes no) && t.Block == s.Block => ((NE|EQ|GE|LE|GT|LT|ULE|UGE|ULT|UGT) flags yes no)
+(EQ t:(TESTW x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x) yes no) && t.Block == s.Block => ((NE|EQ|GE|LE|GT|LT|ULE|UGE|ULT|UGT) flags yes no)
+(EQ t:(TESTB            s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)  s) yes no) && t.Block == s.Block => ((NE|EQ|GE|LE|GT|LT|ULE|UGE|ULT|UGT) flags yes no)
+
+(CMOVQEQ yes no t:(TESTQ x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x)) && t.Block == s.Block => (CMOVQ(NE|EQ|GE|LE|GT|LT|LS|CC|CS|HI) yes no flags)
+(CMOVQEQ yes no t:(TESTL x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x)) && t.Block == s.Block => (CMOVQ(NE|EQ|GE|LE|GT|LT|LS|CC|CS|HI) yes no flags)
+(CMOVQEQ yes no t:(TESTW x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x)) && t.Block == s.Block => (CMOVQ(NE|EQ|GE|LE|GT|LT|LS|CC|CS|HI) yes no flags)
+(CMOVQEQ yes no t:(TESTB            s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)  s)) && t.Block == s.Block => (CMOVQ(NE|EQ|GE|LE|GT|LT|LS|CC|CS|HI) yes no flags)
+
+(CMOVLEQ yes no t:(TESTQ x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x)) && t.Block == s.Block => (CMOVL(NE|EQ|GE|LE|GT|LT|LS|CC|CS|HI) yes no flags)
+(CMOVLEQ yes no t:(TESTL x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x)) && t.Block == s.Block => (CMOVL(NE|EQ|GE|LE|GT|LT|LS|CC|CS|HI) yes no flags)
+(CMOVLEQ yes no t:(TESTW x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x)) && t.Block == s.Block => (CMOVL(NE|EQ|GE|LE|GT|LT|LS|CC|CS|HI) yes no flags)
+(CMOVLEQ yes no t:(TESTB            s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)  s)) && t.Block == s.Block => (CMOVL(NE|EQ|GE|LE|GT|LT|LS|CC|CS|HI) yes no flags)
+
+(CMOVWEQ yes no t:(TESTQ x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x)) && t.Block == s.Block => (CMOVW(NE|EQ|GE|LE|GT|LT|LS|CC|CS|HI) yes no flags)
+(CMOVWEQ yes no t:(TESTL x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x)) && t.Block == s.Block => (CMOVW(NE|EQ|GE|LE|GT|LT|LS|CC|CS|HI) yes no flags)
+(CMOVWEQ yes no t:(TESTW x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x)) && t.Block == s.Block => (CMOVW(NE|EQ|GE|LE|GT|LT|LS|CC|CS|HI) yes no flags)
+(CMOVWEQ yes no t:(TESTB            s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)  s)) && t.Block == s.Block => (CMOVW(NE|EQ|GE|LE|GT|LT|LS|CC|CS|HI) yes no flags)
+
+(SETEQ t:(TESTQ x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x)) && t.Block == s.Block => (SET(NE|EQ|GE|LE|G|L|BE|AE|B|A) flags)
+(SETEQ t:(TESTL x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x)) && t.Block == s.Block => (SET(NE|EQ|GE|LE|G|L|BE|AE|B|A) flags)
+(SETEQ t:(TESTW x:(MOVBQZX s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)) x)) && t.Block == s.Block => (SET(NE|EQ|GE|LE|G|L|BE|AE|B|A) flags)
+(SETEQ t:(TESTB            s:(SET(EQ|NE|L|G|LE|GE|A|B|AE|BE) flags)  s)) && t.Block == s.Block => (SET(NE|EQ|GE|LE|G|L|BE|AE|B|A) flags)

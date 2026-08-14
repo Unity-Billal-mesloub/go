@@ -68,24 +68,24 @@ func printsp()
 func printlock()
 func printunlock()
 
-func concatstring2(*[32]byte, string, string) string
-func concatstring3(*[32]byte, string, string, string) string
-func concatstring4(*[32]byte, string, string, string, string) string
-func concatstring5(*[32]byte, string, string, string, string, string) string
-func concatstrings(*[32]byte, []string) string
+func concatstring2(*[64]byte, string, string) string
+func concatstring3(*[64]byte, string, string, string) string
+func concatstring4(*[64]byte, string, string, string, string) string
+func concatstring5(*[64]byte, string, string, string, string, string) string
+func concatstrings(*[64]byte, []string) string
 
-func concatbyte2(*[32]byte, string, string) []byte
-func concatbyte3(*[32]byte, string, string, string) []byte
-func concatbyte4(*[32]byte, string, string, string, string) []byte
-func concatbyte5(*[32]byte, string, string, string, string, string) []byte
-func concatbytes(*[32]byte, []string) []byte
+func concatbyte2(*[64]byte, string, string) []byte
+func concatbyte3(*[64]byte, string, string, string) []byte
+func concatbyte4(*[64]byte, string, string, string, string) []byte
+func concatbyte5(*[64]byte, string, string, string, string, string) []byte
+func concatbytes(*[64]byte, []string) []byte
 
 func cmpstring(string, string) int
 func intstring(*[4]byte, int64) string
-func slicebytetostring(buf *[32]byte, ptr *byte, n int) string
+func slicebytetostring(buf *[64]byte, ptr *byte, n int) string
 func slicebytetostringtmp(ptr *byte, n int) string
-func slicerunetostring(*[32]byte, []rune) string
-func stringtoslicebyte(*[32]byte, string) []byte
+func slicerunetostring(*[64]byte, []rune) string
+func stringtoslicebyte(*[64]byte, string) []byte
 func stringtoslicerune(*[32]rune, string) []rune
 func slicecopy(toPtr *any, toLen int, fromPtr *any, fromLen int, wid uintptr) int
 
@@ -213,7 +213,6 @@ func moveSliceNoCapNoScan(elemSize uintptr, old *byte, len int) (*byte, int, int
 
 func memmove(to *any, frm *any, length uintptr)
 func memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr)
-func memclrNoHeapPointersPreemptible(ptr unsafe.Pointer, n uintptr)
 func memclrHasPointers(ptr unsafe.Pointer, n uintptr)
 
 func memequal(x, y unsafe.Pointer, size uintptr) bool
@@ -304,6 +303,7 @@ var armHasVFPv4 bool
 var arm64HasATOMICS bool
 var loong64HasLAMCAS bool
 var loong64HasLAM_BH bool
+var loong64HasDBAR_HINTS bool
 var loong64HasLSX bool
 var riscv64HasZbb bool
 

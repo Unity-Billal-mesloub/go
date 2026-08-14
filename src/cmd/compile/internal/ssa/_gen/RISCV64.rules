@@ -622,17 +622,19 @@
 (MOVBUreg x:(Select0 (LoweredAtomicCas64 _ _ _ _))) => (MOVDreg x)
 
 // Avoid sign extension after word arithmetic.
-(MOVWreg x:(ADDIW   _)) => (MOVDreg x)
-(MOVWreg x:(SUBW  _ _)) => (MOVDreg x)
-(MOVWreg x:(NEGW    _)) => (MOVDreg x)
-(MOVWreg x:(MULW  _ _)) => (MOVDreg x)
-(MOVWreg x:(DIVW  _ _)) => (MOVDreg x)
-(MOVWreg x:(DIVUW _ _)) => (MOVDreg x)
-(MOVWreg x:(REMW  _ _)) => (MOVDreg x)
-(MOVWreg x:(REMUW _ _)) => (MOVDreg x)
-(MOVWreg x:(ROLW  _ _)) => (MOVDreg x)
-(MOVWreg x:(RORW  _ _)) => (MOVDreg x)
-(MOVWreg x:(RORIW   _)) => (MOVDreg x)
+// Careful to not omit the sign extension in cases where regalloc
+// might restore without it, see issue 80577.
+(MOVWreg x:(ADDIW   _)) && (x.Type.Size() == 8 || (x.Type.Size() == 4 && x.Type.IsSigned())) => (MOVDreg x)
+(MOVWreg x:(SUBW  _ _)) && (x.Type.Size() == 8 || (x.Type.Size() == 4 && x.Type.IsSigned())) => (MOVDreg x)
+(MOVWreg x:(NEGW    _)) && (x.Type.Size() == 8 || (x.Type.Size() == 4 && x.Type.IsSigned())) => (MOVDreg x)
+(MOVWreg x:(MULW  _ _)) && (x.Type.Size() == 8 || (x.Type.Size() == 4 && x.Type.IsSigned())) => (MOVDreg x)
+(MOVWreg x:(DIVW  _ _)) && (x.Type.Size() == 8 || (x.Type.Size() == 4 && x.Type.IsSigned())) => (MOVDreg x)
+(MOVWreg x:(DIVUW _ _)) && (x.Type.Size() == 8 || (x.Type.Size() == 4 && x.Type.IsSigned())) => (MOVDreg x)
+(MOVWreg x:(REMW  _ _)) && (x.Type.Size() == 8 || (x.Type.Size() == 4 && x.Type.IsSigned())) => (MOVDreg x)
+(MOVWreg x:(REMUW _ _)) && (x.Type.Size() == 8 || (x.Type.Size() == 4 && x.Type.IsSigned())) => (MOVDreg x)
+(MOVWreg x:(ROLW  _ _)) && (x.Type.Size() == 8 || (x.Type.Size() == 4 && x.Type.IsSigned())) => (MOVDreg x)
+(MOVWreg x:(RORW  _ _)) && (x.Type.Size() == 8 || (x.Type.Size() == 4 && x.Type.IsSigned())) => (MOVDreg x)
+(MOVWreg x:(RORIW   _)) && (x.Type.Size() == 8 || (x.Type.Size() == 4 && x.Type.IsSigned())) => (MOVDreg x)
 
 // Fold double extensions.
 (MOVBreg  x:(MOVBreg  _)) => (MOVDreg x)
@@ -840,6 +842,9 @@
 (FLED x (FMOVDconst [-0x1p-1022])) => (SNEZ (ANDI <typ.Int64> [0b00_0000_0011] (FCLASSD x)))
 (FLTD (FMOVDconst [-0x1p-1022]) x) => (SNEZ (ANDI <typ.Int64> [0b00_1111_1100] (FCLASSD x)))
 
+// Absorb conversion between 32 bit and 64 bit if both src and dst are 32 bit.
+(FCVTSD (F(ABS|SQRT)D (FCVTDS X))) => (F(ABS|SQRT)S X)
+
 // Absorb unary sign bit operations into 64 bit classify instruction.
 (S(EQ|NE)Z (ANDI [c] (FCLASSD (FNEGD x)))) => (S(EQ|NE)Z (ANDI <typ.Int64> [(c&0b11_0000_0000)|int64(bits.Reverse8(uint8(c))&0b1111_1111)] (FCLASSD x)))
 (S(EQ|NE)Z (ANDI [c] (FCLASSD (FABSD x)))) => (S(EQ|NE)Z (ANDI <typ.Int64> [(c&0b11_1111_0000)|int64(bits.Reverse8(uint8(c))&0b0000_1111)] (FCLASSD x)))
@@ -880,3 +885,14 @@
 (OR (CZEROEQZ x:(ANDI <t> [c] z) cond) y:(CZERONEZ z cond)) => (OR x y)
 (OR (CZEROEQZ <t> x cond) (CZERONEZ <t> ((ADDI|ORI|XORI) [c] x) cond)) => ((ADD|OR|XOR) x (CZERONEZ <t> (MOVDconst [c]) cond))
 (OR (CZEROEQZ <t> ((ADDI|ORI|XORI) [c] x) cond) (CZERONEZ <t> x cond)) => ((ADD|OR|XOR) x (CZEROEQZ <t> (MOVDconst [c]) cond))
+
+// Strength reduction for multiplication by a constant.
+(MUL x (MOVDconst [c])) && c%3 == 0 && isPowerOfTwo(c/3) && buildcfg.GORISCV64 >= 22 => (SLLI [log64(c/3)] (SH1ADD <x.Type> x x))
+(MUL x (MOVDconst [c])) && c%5 == 0 && isPowerOfTwo(c/5) && buildcfg.GORISCV64 >= 22 => (SLLI [log64(c/5)] (SH2ADD <x.Type> x x))
+(MUL x (MOVDconst [c])) && c%9 == 0 && isPowerOfTwo(c/9) && buildcfg.GORISCV64 >= 22 => (SLLI [log64(c/9)] (SH3ADD <x.Type> x x))
+
+// 32-bit multiply by constant (int32/uint32).
+(MULW x (MOVDconst [c])) && c%3 == 0 && isPowerOfTwo(c/3) && buildcfg.GORISCV64 >= 22 => (SLLIW [log64(c/3)] (SH1ADD <x.Type> x x))
+(MULW x (MOVDconst [c])) && c%5 == 0 && isPowerOfTwo(c/5) && buildcfg.GORISCV64 >= 22 => (SLLIW [log64(c/5)] (SH2ADD <x.Type> x x))
+(MULW x (MOVDconst [c])) && c%9 == 0 && isPowerOfTwo(c/9) && buildcfg.GORISCV64 >= 22 => (SLLIW [log64(c/9)] (SH3ADD <x.Type> x x))
+

@@ -788,7 +788,7 @@ func (h *mheap) sysAlloc(n uintptr, hintList **arenaHint, arenaList *[]arenaIdx)
 		// particular, this is already how Windows behaves, so
 		// it would simplify things there.
 		if v != nil {
-			sysFreeOS(v, n)
+			sysUnreserve(v, n)
 		}
 		*hintList = hint.next
 		h.arenaHintAlloc.free(unsafe.Pointer(hint))
@@ -921,58 +921,6 @@ mapped:
 	return
 }
 
-// sysReserveAligned is like sysReserve, but the returned pointer is
-// aligned to align bytes. It may reserve either n or n+align bytes,
-// so it returns the size that was reserved.
-func sysReserveAligned(v unsafe.Pointer, size, align uintptr, vmaName string) (unsafe.Pointer, uintptr) {
-	if isSbrkPlatform {
-		if v != nil {
-			throw("unexpected heap arena hint on sbrk platform")
-		}
-		return sysReserveAlignedSbrk(size, align)
-	}
-	// Since the alignment is rather large in uses of this
-	// function, we're not likely to get it by chance, so we ask
-	// for a larger region and remove the parts we don't need.
-	retries := 0
-retry:
-	p := uintptr(sysReserve(v, size+align, vmaName))
-	switch {
-	case p == 0:
-		return nil, 0
-	case p&(align-1) == 0:
-		return unsafe.Pointer(p), size + align
-	case GOOS == "windows":
-		// On Windows we can't release pieces of a
-		// reservation, so we release the whole thing and
-		// re-reserve the aligned sub-region. This may race,
-		// so we may have to try again.
-		sysFreeOS(unsafe.Pointer(p), size+align)
-		p = alignUp(p, align)
-		p2 := sysReserve(unsafe.Pointer(p), size, vmaName)
-		if p != uintptr(p2) {
-			// Must have raced. Try again.
-			sysFreeOS(p2, size)
-			if retries++; retries == 100 {
-				throw("failed to allocate aligned heap memory; too many retries")
-			}
-			goto retry
-		}
-		// Success.
-		return p2, size
-	default:
-		// Trim off the unaligned parts.
-		pAligned := alignUp(p, align)
-		sysFreeOS(unsafe.Pointer(p), pAligned-p)
-		end := pAligned + size
-		endLen := (p + size + align) - end
-		if endLen > 0 {
-			sysFreeOS(unsafe.Pointer(end), endLen)
-		}
-		return unsafe.Pointer(pAligned), size
-	}
-}
-
 // enableMetadataHugePages enables huge pages for various sources of heap metadata.
 //
 // A note on latency: for sufficiently small heaps (<10s of GiB) this function will take constant
@@ -1085,10 +1033,10 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, checkGCTrigger 
 const doubleCheckMalloc = false
 
 // sizeSpecializedMallocEnabled is the set of conditions where we enable the size-specialized
-// mallocgc implementation: the experiment must be enabled, and none of the sanitizers should
-// be enabled. The tables used to select the size-specialized malloc function do not compile
-// properly on plan9, so size-specialized malloc is also disabled on plan9.
-const sizeSpecializedMallocEnabled = goexperiment.SizeSpecializedMalloc && GOOS != "plan9" && !asanenabled && !raceenabled && !msanenabled && !valgrindenabled
+// mallocgc implementation: none of the sanitizers should be enabled. The tables used to select
+// the size-specialized malloc function do not compile properly on plan9, so
+// size-specialized malloc is also disabled on plan9.
+const sizeSpecializedMallocEnabled = GOOS != "plan9" && !asanenabled && !raceenabled && !msanenabled && !valgrindenabled
 
 // runtimeFreegcEnabled is the set of conditions where we enable the runtime.freegc
 // implementation and the corresponding allocation-related changes: the experiment must be
@@ -1128,9 +1076,12 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 		return unsafe.Pointer(&zerobase)
 	}
 
-	if sizeSpecializedMallocEnabled && heapBitsInSpan(size) {
+	if sizeSpecializedMallocEnabled && size < uintptr(len(mallocNoScanTable)) {
 		if typ == nil || !typ.Pointers() {
-			return mallocNoScanTable[size](size, typ, needzero)
+			if size >= maxTinySize {
+				return mallocNoScanTable[size](size, typ, needzero)
+			}
+			return mallocgcTinySC2(size, typ, needzero)
 		} else {
 			if !needzero {
 				throw("objects with pointers must be zeroed")
@@ -1169,7 +1120,6 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	var x unsafe.Pointer
 	var elemsize uintptr
 	if sizeSpecializedMallocEnabled {
-		// we know that heapBitsInSpan is false.
 		if size <= maxSmallSize-gc.MallocHeaderSize {
 			if typ == nil || !typ.Pointers() {
 				x, elemsize = mallocgcSmallNoscan(size, typ, needzero)
@@ -1177,7 +1127,11 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 				if !needzero {
 					throw("objects with pointers must be zeroed")
 				}
-				x, elemsize = mallocgcSmallScanHeader(size, typ)
+				if heapBitsInSpan(size) {
+					x, elemsize = mallocgcSmallScanNoHeader(size, typ)
+				} else {
+					x, elemsize = mallocgcSmallScanHeader(size, typ)
+				}
 			}
 		} else {
 			x, elemsize = mallocgcLarge(size, typ, needzero)
@@ -1226,10 +1180,6 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	if asanenabled {
 		// Poison the space between the end of the requested size of x
 		// and the end of the slot. Unpoison the requested allocation.
-		frag := elemsize - size
-		if typ != nil && typ.Pointers() && !heapBitsInSpan(elemsize) && size <= maxSmallSize-gc.MallocHeaderSize {
-			frag -= gc.MallocHeaderSize
-		}
 		asanpoison(unsafe.Add(x, size-asanRZ), asanRZ)
 		asanunpoison(x, size-asanRZ)
 	}
@@ -1892,28 +1842,6 @@ func postMallocgcDebug(x unsafe.Pointer, elemsize uintptr, typ *_type) {
 	}
 }
 
-// deductAssistCredit reduces the current G's assist credit
-// by size bytes, and assists the GC if necessary.
-//
-// Caller must be preemptible.
-func deductAssistCredit(size uintptr) {
-	// Charge the current user G for this allocation.
-	assistG := getg()
-	if assistG.m.curg != nil {
-		assistG = assistG.m.curg
-	}
-	// Charge the allocation against the G. We'll account
-	// for internal fragmentation at the end of mallocgc.
-	assistG.gcAssistBytes -= int64(size)
-
-	if assistG.gcAssistBytes < 0 {
-		// This G is in debt. Assist the GC to correct
-		// this before allocating. This must happen
-		// before disabling preemption.
-		gcAssistAlloc(assistG)
-	}
-}
-
 // addAssistCredit is like deductAssistCredit,
 // but adds credit rather than removes,
 // and never calls gcAssistAlloc.
@@ -2200,15 +2128,6 @@ func memclrNoHeapPointersChunked(size uintptr, x unsafe.Pointer) {
 		}
 		memclrNoHeapPointers(unsafe.Pointer(voff), n)
 	}
-}
-
-// memclrNoHeapPointersPreemptible is the compiler-callable entry point
-// for clearing large buffers with preemption support. It has the same
-// signature as memclrNoHeapPointers so the compiler can emit calls to it
-// directly. It delegates to memclrNoHeapPointersChunked which splits the
-// work into 256KB chunks with preemption checks between them.
-func memclrNoHeapPointersPreemptible(ptr unsafe.Pointer, n uintptr) {
-	memclrNoHeapPointersChunked(n, ptr)
 }
 
 // implementation of new builtin

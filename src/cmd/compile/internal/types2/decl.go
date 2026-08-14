@@ -255,6 +255,10 @@ func (check *Checker) cycleError(cycle []Object, start int) {
 	// may refer to imported types. See go.dev/issue/50788.
 	// TODO(gri) This functionality is used elsewhere. Factor it out.
 	name := func(obj Object) string {
+		// include any type arguments in the reported error message
+		if n := asNamed(obj.Type()); n != nil && n.inst != nil {
+			return TypeString(n, check.qualifier)
+		}
 		return packagePrefix(obj.Pkg(), check.qualifier) + obj.Name()
 	}
 
@@ -345,7 +349,7 @@ func (check *Checker) constDecl(obj *Const, typ, init syntax.Expr, inherited boo
 			// (see issues go.dev/issue/42991, go.dev/issue/42992).
 			check.errpos = obj.pos
 		}
-		check.expr(nil, &x, init)
+		check.expr(nil, nil, &x, init)
 	}
 	check.initConst(obj, &x)
 }
@@ -378,7 +382,7 @@ func (check *Checker) varDecl(obj *Var, lhs []*Var, typ, init syntax.Expr) {
 	if lhs == nil || len(lhs) == 1 {
 		assert(lhs == nil || lhs[0] == obj)
 		var x operand
-		check.expr(newTarget(obj.typ, obj.name), &x, init)
+		check.expr(newTarget(obj.typ, obj.name), obj.typ, &x, init)
 		check.initVar(obj, &x, "variable declaration")
 		return
 	}
@@ -679,6 +683,12 @@ func (check *Checker) funcDecl(obj *Func, decl *declInfo) {
 
 	fdecl := decl.fdecl
 	check.funcType(sig, fdecl.Recv, fdecl.TParamList, fdecl.Type)
+
+	if fdecl.Pragma != nil {
+		if p, ok := fdecl.Pragma.(interface{ Nointerface() bool }); ok && p.Nointerface() {
+			obj.nointerface = true
+		}
+	}
 
 	// Set the scope's extent to the complete "func (...) { ... }"
 	// so that Scope.Innermost works correctly.

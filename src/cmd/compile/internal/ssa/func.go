@@ -8,6 +8,8 @@ import (
 	"cmd/compile/internal/abi"
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
+	"cmd/compile/internal/ssa/block"
+	"cmd/compile/internal/ssa/ssabase"
 	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
@@ -33,11 +35,11 @@ type Func struct {
 	bid idAlloc // block ID allocator
 	vid idAlloc // value ID allocator
 
-	HTMLWriter     *HTMLWriter    // html writer, for debugging
+	FatalCleanup   func()         // cleanup function to run before reporting a fatal error
 	PrintOrHtmlSSA bool           // true if GOSSAFUNC matches, true even if fe.Log() (spew phase results to stdout) is false.  There's an odd dependence on this in debug.go for method logf.
 	ruleMatches    map[string]int // number of times countRule was called during compilation for any given string
-	ABI0           *abi.ABIConfig // A copy, for no-sync access
-	ABI1           *abi.ABIConfig // A copy, for no-sync access
+	ABI0           *abi.ABIConfig // ABI configuration for ABI0
+	ABI1           *abi.ABIConfig // ABI configuration for ABIInternal
 	ABISelf        *abi.ABIConfig // ABI for function being compiled
 	ABIDefault     *abi.ABIConfig // ABI for rtcall and other no-parsed-signature/pragma functions.
 
@@ -54,13 +56,13 @@ type Func struct {
 	RegAlloc []Location
 
 	// temporary registers allocated to rare instructions
-	tempRegs map[ID]*Register
+	tempRegs map[ID]*ssabase.Register
 
 	// map from LocalSlot to set of Values that we want to store in that slot.
 	NamedValues map[LocalSlot][]*Value
 	// Names is a copy of NamedValues.Keys. We keep a separate list
 	// of keys to make iteration order deterministic.
-	Names []*LocalSlot
+	Names []LocalSlot
 	// Canonicalize root/top-level local slots, and canonicalize their pieces.
 	// Because LocalSlot pieces refer to their parents with a pointer, this ensures that equivalent slots really are equal.
 	CanonicalLocalSlots  map[LocalSlot]*LocalSlot
@@ -181,6 +183,8 @@ func (f *Func) retPoset(po *poset) {
 	f.Cache.scrPoset = append(f.Cache.scrPoset, po)
 }
 
+// localSlotAddr returns a stable canonical *LocalSlot for slot, created on
+// first use. SplitOf parents need it: f.Names holds values, not pointers.
 func (f *Func) localSlotAddr(slot LocalSlot) *LocalSlot {
 	a, ok := f.CanonicalLocalSlots[slot]
 	if !ok {
@@ -416,7 +420,7 @@ func (f *Func) freeValue(v *Value) {
 }
 
 // NewBlock allocates a new Block of the given kind and places it at the end of f.Blocks.
-func (f *Func) NewBlock(kind BlockKind) *Block {
+func (f *Func) NewBlock(kind block.BlockKind) *Block {
 	var b *Block
 	if f.freeBlocks != nil {
 		b = f.freeBlocks
@@ -749,17 +753,17 @@ func (f *Func) Warnl(pos src.XPos, msg string, args ...any) { f.fe.Warnl(pos, ms
 func (f *Func) Logf(msg string, args ...any)                { f.fe.Logf(msg, args...) }
 func (f *Func) Log() bool                                   { return f.fe.Log() }
 
-func (f *Func) Fatalf(msg string, args ...any) {
-	stats := "crashed"
+func (f *Func) Fatalf(msg string, args ...any) { f.FatalfWithPos(f.Entry.Pos, msg, args...) }
+
+func (f *Func) FatalfWithPos(pos src.XPos, msg string, args ...any) {
 	if f.Log() {
-		f.Logf("  pass %s end %s\n", f.pass.name, stats)
+		f.Logf("  pass %s end crashed\n", f.pass.name)
 		printFunc(f)
 	}
-	if f.HTMLWriter != nil {
-		f.HTMLWriter.WritePhase(f.pass.name, fmt.Sprintf("%s <span class=\"stats\">%s</span>", f.pass.name, stats))
-		f.HTMLWriter.flushPhases()
+	if f.FatalCleanup != nil {
+		f.FatalCleanup()
 	}
-	f.fe.Fatalf(f.Entry.Pos, msg, args...)
+	f.fe.Fatalf(pos, msg, args...)
 }
 
 // postorder returns the reachable blocks in f in a postorder traversal.

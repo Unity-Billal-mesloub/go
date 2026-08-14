@@ -6,6 +6,7 @@ package ssa
 
 import (
 	"bytes"
+	"cmd/compile/internal/ssa/block"
 	"cmd/internal/src"
 	"cmp"
 	"fmt"
@@ -803,6 +804,14 @@ func (w *HTMLWriter) WritePhase(phase, title string) {
 	w.prevHash = hash
 }
 
+// FatalCleanup should be called to do cleanup if the compilation is exiting early due to
+// a fatal error.
+func (w *HTMLWriter) FatalCleanup() {
+	const stats = "crashed"
+	w.WritePhase(w.Func.pass.name, fmt.Sprintf("%s <span class=\"stats\">%s</span>", w.Func.pass.name, stats))
+	w.flushPhases()
+}
+
 // flushPhases collects any pending phases and titles, writes them to the html, and resets the pending slices.
 func (w *HTMLWriter) flushPhases() {
 	phaseLen := len(w.pendingPhases)
@@ -1094,7 +1103,7 @@ func (d *dotWriter) writeFuncSVG(w io.Writer, phase string, f *Func) {
 	fmt.Fprintf(pipe, `node [style=filled,fillcolor=white,fontsize=16,fontname="Menlo,Times,serif",margin="0.01,0.03"];`)
 	fmt.Fprintf(pipe, `edge [fontsize=16,fontname="Menlo,Times,serif"];`)
 	for i, b := range f.Blocks {
-		if b.Kind == BlockInvalid {
+		if b.Kind == block.BlockInvalid {
 			continue
 		}
 		layout := ""

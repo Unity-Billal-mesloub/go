@@ -24,7 +24,7 @@ const bitSize16 = 2
 
 // Errno is not used with GOOS plan9.
 //
-// It exists because because the Go 1 API contract
+// It exists because the Go 1 API contract
 // (api/go1.txt's "pkg syscall, type Errno uintptr")
 // says it exists, and so code in the ecosystem often
 // assume it exists. This lets portable code be written
@@ -115,6 +115,13 @@ var (
 // For testing: clients can set this flag to force
 // creation of IPv6 sockets to return [EAFNOSUPPORT].
 var SocketDisableIPv6 bool
+
+// x/sys/plan9 accesses these in assembly.
+//
+//go:linkname Syscall
+//go:linkname Syscall6
+//go:linkname RawSyscall
+//go:linkname RawSyscall6
 
 func Syscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err ErrorString)
 func Syscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err ErrorString)
@@ -227,6 +234,10 @@ func Pipe(p []int) (err error) {
 
 // Underlying system call writes to newoffset via pointer.
 // Implemented in assembly to avoid allocation.
+//
+// Accessed via assembly from x/sys/plan9.
+//
+//go:linkname seek
 func seek(placeholder uintptr, fd int, offset int64, whence int) (newoffset int64, err string)
 
 func Seek(fd int, offset int64, whence int) (newoffset int64, err error) {

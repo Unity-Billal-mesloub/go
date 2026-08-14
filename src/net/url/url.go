@@ -2,20 +2,20 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:generate go run gen_encoding_table.go
+
 // Package url parses URLs and implements query escaping.
 //
 // See RFC 3986. This package generally follows RFC 3986, except where
 // it deviates for compatibility reasons.
 // RFC 6874 followed for IPv6 zone literals.
-
-//go:generate go run gen_encoding_table.go
-
 package url
 
 // When sending changes, first  search old issues for history on decisions.
 // Unit tests should also contain references to issue numbers with details.
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"internal/godebug"
@@ -412,6 +412,16 @@ func Parse(rawURL string) (*URL, error) {
 	return url, nil
 }
 
+// MustParse calls [Parse](rawURL) and panics on error.
+// It is intended for use with hard-coded strings representing valid urls.
+func MustParse(rawURL string) *URL {
+	url, err := Parse(rawURL)
+	if err != nil {
+		panic(err)
+	}
+	return url
+}
+
 // ParseRequestURI parses a raw url into a [URL] structure. It assumes that
 // url was received in an HTTP request, so the url is interpreted
 // only as an absolute URI or an absolute path.
@@ -607,18 +617,22 @@ func parseHost(scheme, host string) (string, error) {
 	} else if i := strings.Index(host, ":"); i != -1 {
 		lastColon := strings.LastIndex(host, ":")
 		if lastColon != i {
-			if scheme == "postgresql" || scheme == "postgres" {
-				// PostgreSQL relies on non-RFC-3986 parsing to accept
-				// a comma-separated list of hosts (with optional ports)
-				// in the host subcomponent:
-				// https://www.postgresql.org/docs/11/libpq-connect.html#LIBPQ-MULTIPLE-HOSTS
-				//
-				// Since we historically permitted colons to appear in the host,
-				// continue to permit it for postgres:// URLs only.
-				// https://go.dev/issue/75223
-				i = lastColon
-			} else if urlstrictcolons.Value() == "0" {
-				urlstrictcolons.IncNonDefault()
+			// RFC 3986 does not allow colons to appear in the host subcomponent.
+			//
+			// However, a number of databases including PostgreSQL and MongoDB
+			// permit a comma-separated list of hosts (with optional ports) in the
+			// host subcomponent.
+			//
+			// Since we historically permitted colons to appear in the host,
+			// enforce strict colons only for http and https URLs.
+			//
+			// See https://go.dev/issue/75223 and https://go.dev/issue/78077.
+			if scheme == "http" || scheme == "https" {
+				if urlstrictcolons.Value() == "0" {
+					urlstrictcolons.IncNonDefault()
+					i = lastColon
+				}
+			} else {
 				i = lastColon
 			}
 		}
@@ -833,6 +847,13 @@ func (u *URL) String() string {
 			}
 		}
 		path := u.EscapedPath()
+		if u.OmitHost && u.Host == "" && u.User == nil && strings.HasPrefix(path, "//") {
+			// Escape the first / in a path starting with "//" and no authority
+			// so that re-parsing the URL doesn't turn the path into an authority
+			// (e.g., Path="//host/p" producing "http://host/p").
+			buf.WriteString("%2F")
+			path = path[1:]
+		}
 		if path != "" && path[0] != '/' && u.Host != "" {
 			buf.WriteByte('/')
 		}
@@ -946,6 +967,7 @@ func ParseQuery(query string) (Values, error) {
 
 var urlmaxqueryparams = godebug.New("urlmaxqueryparams")
 
+// Keep this in sync with net/http/httputil.
 const defaultMaxParams = 10000
 
 func urlParamsWithinMax(params int) bool {
@@ -1045,54 +1067,43 @@ func resolvePath(base, ref string) string {
 		return ""
 	}
 
-	var (
-		elem string
-		dst  strings.Builder
-	)
-	first := true
+	dst := make([]byte, 0, len(full)+1)
+	dst = append(dst, '/')
+	elem := ""
 	remaining := full
-	// We want to return a leading '/', so write it now.
-	dst.WriteByte('/')
 	found := true
+	first := true
 	for found {
 		elem, remaining, found = strings.Cut(remaining, "/")
-		if elem == "." {
+		switch elem {
+		case ".":
 			first = false
-			// drop
 			continue
-		}
-
-		if elem == ".." {
-			// Ignore the leading '/' we already wrote.
-			str := dst.String()[1:]
-			index := strings.LastIndexByte(str, '/')
-
-			dst.Reset()
-			dst.WriteByte('/')
-			if index == -1 {
-				first = true
+		case "..":
+			if i := bytes.LastIndexByte(dst[1:], '/'); i >= 0 {
+				dst = dst[:i+1]
 			} else {
-				dst.WriteString(str[:index])
+				dst = dst[:1]
 			}
-		} else {
+			first = len(dst) == 1
+		default:
 			if !first {
-				dst.WriteByte('/')
+				dst = append(dst, '/')
 			}
-			dst.WriteString(elem)
+			dst = append(dst, elem...)
 			first = false
 		}
 	}
 
 	if elem == "." || elem == ".." {
-		dst.WriteByte('/')
+		dst = append(dst, '/')
 	}
 
 	// We wrote an initial '/', but we don't want two.
-	r := dst.String()
-	if len(r) > 1 && r[1] == '/' {
-		r = r[1:]
+	if len(dst) > 1 && dst[1] == '/' {
+		return string(dst[1:])
 	}
-	return r
+	return string(dst)
 }
 
 // IsAbs reports whether the [URL] is absolute.

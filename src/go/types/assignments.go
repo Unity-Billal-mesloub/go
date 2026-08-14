@@ -94,9 +94,8 @@ func (check *Checker) assignment(x *operand, T Type, context string) {
 	// x.typ is typed
 
 	// A generic (non-instantiated) function value cannot be assigned to a variable.
-	if sig, _ := x.typ_.Underlying().(*Signature); sig != nil && sig.TypeParams().Len() > 0 {
-		check.errorf(x, WrongTypeArgCount, "cannot use generic function %s without instantiation in %s", x, context)
-		x.mode_ = invalid
+	check.nonGeneric(newTarget(T, context), x)
+	if !x.isValid() {
 		return
 	}
 
@@ -213,7 +212,7 @@ func (check *Checker) lhsVar(lhs ast.Expr) Type {
 	}
 
 	var x operand
-	check.expr(nil, &x, lhs)
+	check.expr(nil, nil, &x, lhs)
 
 	if v != nil {
 		check.usedVars[v] = v_used // restore v.used
@@ -233,7 +232,7 @@ func (check *Checker) lhsVar(lhs ast.Expr) Type {
 	default:
 		if sel, ok := x.expr.(*ast.SelectorExpr); ok {
 			var op operand
-			check.expr(nil, &op, sel.X)
+			check.expr(nil, nil, &op, sel.X)
 			if op.mode() == mapindex {
 				check.errorf(&x, UnaddressableFieldAssign, "cannot assign to struct field %s in map", ExprString(x.expr))
 				return Typ[Invalid]
@@ -269,7 +268,7 @@ func (check *Checker) assignVar(lhs, rhs ast.Expr, x *operand, context string) {
 			}
 		}
 		x = new(operand)
-		check.expr(target, x, rhs)
+		check.expr(target, T, x, rhs)
 	}
 
 	if T == nil && context == "assignment" {
@@ -386,12 +385,14 @@ func (check *Checker) returnError(at positioner, lhs []*Var, rhs []*operand) {
 // If returnStmt is non-nil, initVars type-checks the implicit assignment
 // of result expressions orig_rhs to function result parameters lhs.
 func (check *Checker) initVars(lhs []*Var, orig_rhs []ast.Expr, returnStmt ast.Stmt) {
+	l, r := len(lhs), len(orig_rhs)
+
 	context := "assignment"
 	if returnStmt != nil {
 		context = "return statement"
+	} else if l > 1 {
+		context = "multiple assignment"
 	}
-
-	l, r := len(lhs), len(orig_rhs)
 
 	// If l == 1 and the rhs is a single call, for a better
 	// error message don't handle it as n:n mapping below.
@@ -409,7 +410,7 @@ func (check *Checker) initVars(lhs []*Var, orig_rhs []ast.Expr, returnStmt ast.S
 			if returnStmt != nil && desc == "" {
 				desc = "result variable"
 			}
-			check.expr(newTarget(lhs.typ, desc), &x, orig_rhs[i])
+			check.expr(newTarget(lhs.typ, desc), lhs.typ, &x, orig_rhs[i])
 			check.initVar(lhs, &x, context)
 		}
 		return
@@ -472,6 +473,11 @@ func (check *Checker) initVars(lhs []*Var, orig_rhs []ast.Expr, returnStmt ast.S
 func (check *Checker) assignVars(lhs, orig_rhs []ast.Expr) {
 	l, r := len(lhs), len(orig_rhs)
 
+	context := "assignment"
+	if l > 1 {
+		context = "multiple assignment"
+	}
+
 	// If l == 1 and the rhs is a single call, for a better
 	// error message don't handle it as n:n mapping below.
 	isCall := false
@@ -483,7 +489,7 @@ func (check *Checker) assignVars(lhs, orig_rhs []ast.Expr) {
 	// each value can be assigned to its corresponding variable.
 	if l == r && !isCall {
 		for i, lhs := range lhs {
-			check.assignVar(lhs, orig_rhs[i], nil, "assignment")
+			check.assignVar(lhs, orig_rhs[i], nil, context)
 		}
 		return
 	}
@@ -504,7 +510,7 @@ func (check *Checker) assignVars(lhs, orig_rhs []ast.Expr) {
 	r = len(rhs)
 	if l == r {
 		for i, lhs := range lhs {
-			check.assignVar(lhs, nil, rhs[i], "assignment")
+			check.assignVar(lhs, nil, rhs[i], context)
 		}
 		// Only record comma-ok expression if both assignments succeeded
 		// (go.dev/issue/59371).

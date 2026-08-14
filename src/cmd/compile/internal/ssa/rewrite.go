@@ -360,17 +360,25 @@ func canMergeLoad(target, load *Value) bool {
 		}
 	}
 
+	f := target.Block.Func
+	visited := f.newSparseSet(f.NumValues())
+	defer f.retSparseSet(visited)
+
 	// memPreds contains memory states known to be predecessors of load's
 	// memory state. It is lazily initialized.
 	var memPreds map[*Value]bool
-	for i := 0; len(args) > 0; i++ {
-		const limit = 100
-		if i >= limit {
-			// Give up if we have done a lot of iterations.
+	for len(args) > 0 {
+		const limit = 2048 // enough to comfortably cover unrolled crypto blocks
+		if visited.size() >= limit {
+			// Give up if we have visited a lot of values.
 			return false
 		}
 		v := args[len(args)-1]
 		args = args[:len(args)-1]
+		if visited.contains(v.ID) {
+			continue
+		}
+		visited.add(v.ID)
 		if target.Block.ID != v.Block.ID {
 			// Since target and load are in the same block
 			// we can stop searching when we leave the block.
@@ -480,7 +488,7 @@ func isSpecializedMalloc(aux Aux) bool {
 	name := fn.String()
 	return strings.HasPrefix(name, "runtime.mallocgcSmallNoScanSC") ||
 		strings.HasPrefix(name, "runtime.mallocgcSmallScanNoHeaderSC") ||
-		strings.HasPrefix(name, "runtime.mallocgcTinySize")
+		strings.HasPrefix(name, "runtime.mallocgcTinySC")
 }
 
 // canLoadUnaligned reports if the architecture supports unaligned load operations.
@@ -681,6 +689,9 @@ func auxIntToInt64(i int64) int64 {
 func auxIntToUint8(i int64) uint8 {
 	return uint8(i)
 }
+func auxIntToUint64(i int64) uint64 {
+	return uint64(i)
+}
 func auxIntToFloat32(i int64) float32 {
 	return float32(math.Float64frombits(uint64(i)))
 }
@@ -732,6 +743,9 @@ func int64ToAuxInt(i int64) int64 {
 }
 func uint8ToAuxInt(i uint8) int64 {
 	return int64(int8(i))
+}
+func uint64ToAuxInt(i uint64) int64 {
+	return int64(i)
 }
 func float32ToAuxInt(f float32) int64 {
 	return int64(math.Float64bits(float64(f)))
@@ -882,10 +896,17 @@ func isStackPtr(v *Value) bool {
 	return v.Op == OpSP || v.Op == OpLocalAddr
 }
 
-// disjoint reports whether the memory region specified by [p1:p1+n1)
+// disjoint reports whether the memory region specified by [p1:p1+t1.Size())
+// does not overlap with [p2:p2+t2.Size()).
+// A return value of false does not imply the regions overlap.
+func disjoint(p1 *Value, t1 *types.Type, p2 *Value, t2 *types.Type) bool {
+	return disjoint1(p1, t1.Size(), p2, t2.Size())
+}
+
+// disjoint1 reports whether the memory region specified by [p1:p1+n1)
 // does not overlap with [p2:p2+n2).
 // A return value of false does not imply the regions overlap.
-func disjoint(p1 *Value, n1 int64, p2 *Value, n2 int64) bool {
+func disjoint1(p1 *Value, n1 int64, p2 *Value, n2 int64) bool {
 	if n1 == 0 || n2 == 0 {
 		return true
 	}
@@ -1103,6 +1124,20 @@ func flagArg(v *Value) *Value {
 		return nil
 	}
 	return v.Args[0]
+}
+
+// amd64CapAVXShift caps an AMD64 AVX vector shift amount c so that over-shifts
+// always result in 0.
+//
+// These instructions have room for an 8-bit immediate and any value larger than
+// the element width will result in 0 or -1 (for an arithmetic right shift).
+// Thus, we simply cap this at 255.
+func amd64CapAVXShift(auxInt int64) uint8 {
+	u := auxIntToUint64(auxInt)
+	if u > 255 {
+		return 255
+	}
+	return uint8(u)
 }
 
 // arm64Negate finds the complement to an ARM64 condition code,
@@ -1349,107 +1384,63 @@ func overlap(offset1, size1, offset2, size2 int64) bool {
 	return false
 }
 
-// check if value zeroes out upper 32-bit of 64-bit register.
+// ZeroUpper32Bits checks if value zeroes out upper 32-bit of 64-bit register.
 // depth limits recursion depth. In AMD64.rules 3 is used as limit,
 // because it catches same amount of cases as 4.
-func ZeroUpper32Bits(x *Value, depth int) bool {
-	if x.Type.IsSigned() && x.Type.Size() < 8 {
-		// If the value is signed, it might get re-sign-extended
-		// during spill and restore. See issue 68227.
+func ZeroUpper32Bits(x *Value) bool { return zeroUpperBits(x, 32, 3) }
+
+// ZeroUpper48Bits is similar to ZeroUpper32Bits, but for upper 48 bits.
+func ZeroUpper48Bits(x *Value) bool { return zeroUpperBits(x, 48, 3) }
+
+// ZeroUpper56Bits is similar to ZeroUpper32Bits, but for upper 56 bits.
+func ZeroUpper56Bits(x *Value) bool { return zeroUpperBits(x, 56, 3) }
+
+// zeroUpperBits reports whether the 64-bit register holding x provably has
+// its upper `bits` bits zero, i.e. the value is below 2^(64-bits).
+//
+// Which ops guarantee this is declared per op in the _gen op definitions
+// (the zeroUpperBits attribute); only the value-dependent cases live here.
+func zeroUpperBits(x *Value, bits int64, depth int) bool {
+	if x.Type.IsSigned() && 8*x.Type.Size() <= 64-bits {
+		// A spill/restore sign-extends from the type's width (issue 68227).
+		// A signed type no wider than the claimed value width may have its
+		// sign bit set, so a restore can write ones into the upper bits.
+		// Wider signed types are safe: their value is below the type's
+		// sign bit, so a restore zero-extends.
 		return false
 	}
+	if int64(opcodeTable[x.Op].zeroUpperBits) >= bits {
+		return true
+	}
 	switch x.Op {
-	case OpAMD64MOVLconst, OpAMD64MOVLload, OpAMD64MOVLQZX, OpAMD64MOVLloadidx1,
-		OpAMD64MOVWload, OpAMD64MOVWloadidx1, OpAMD64MOVBload, OpAMD64MOVBloadidx1,
-		OpAMD64MOVLloadidx4, OpAMD64ADDLload, OpAMD64SUBLload, OpAMD64ANDLload,
-		OpAMD64ORLload, OpAMD64XORLload, OpAMD64CVTTSD2SL,
-		OpAMD64ADDL, OpAMD64ADDLconst, OpAMD64SUBL, OpAMD64SUBLconst,
-		OpAMD64ANDL, OpAMD64ANDLconst, OpAMD64ORL, OpAMD64ORLconst,
-		OpAMD64XORL, OpAMD64XORLconst, OpAMD64NEGL, OpAMD64NOTL,
-		OpAMD64SHRL, OpAMD64SHRLconst, OpAMD64SARL, OpAMD64SARLconst,
-		OpAMD64SHLL, OpAMD64SHLLconst:
-		return true
-	case OpAMD64MOVQconst:
-		return uint64(uint32(x.AuxInt)) == uint64(x.AuxInt)
-	case OpARM64REV16W, OpARM64REVW, OpARM64RBITW, OpARM64CLZW, OpARM64EXTRWconst,
-		OpARM64MULW, OpARM64MNEGW, OpARM64UDIVW, OpARM64DIVW, OpARM64UMODW,
-		OpARM64MADDW, OpARM64MSUBW, OpARM64RORW, OpARM64RORWconst:
-		return true
+	case OpAMD64MOVQconst, OpAMD64MOVLconst:
+		// A constant qualifies whenever its value fits the claimed width.
+		// (MOVLconst always zeroes the upper 32 bits, so for bits==32 it
+		// is already handled by its zeroUpperBits attribute.)
+		return uint64(x.AuxInt)>>(64-bits) == 0
 	case OpArg: // note: but not ArgIntReg
 		// amd64 always loads args from the stack unsigned.
 		// most other architectures load them sign/zero extended based on the type.
-		return x.Type.Size() == 4 && x.Block.Func.Config.arch == "amd64"
-	case OpPhi, OpSelect0, OpSelect1:
+		return 8*x.Type.Size() == 64-bits && x.Block.Func.Config.arch == "amd64"
+	case OpSelect0, OpSelect1:
+		// A Select names one register result of a tuple-producing op, so
+		// the question is what that op's write does. The op's attribute
+		// covers every integer result; a Select of a non-covered result
+		// (flags, memory) never appears as an operand of the rules that
+		// ask about upper bits.
+		return int64(opcodeTable[x.Args[0].Op].zeroUpperBits) >= bits
+	case OpPhi:
 		// Phis can use each-other as an arguments, instead of tracking visited values,
 		// just limit recursion depth.
 		if depth <= 0 {
 			return false
 		}
 		for i := range x.Args {
-			if !ZeroUpper32Bits(x.Args[i], depth-1) {
+			if !zeroUpperBits(x.Args[i], bits, depth-1) {
 				return false
 			}
 		}
 		return true
-
-	}
-	return false
-}
-
-// ZeroUpper48Bits is similar to ZeroUpper32Bits, but for upper 48 bits.
-func ZeroUpper48Bits(x *Value, depth int) bool {
-	if x.Type.IsSigned() && x.Type.Size() < 8 {
-		return false
-	}
-	switch x.Op {
-	case OpAMD64MOVWQZX, OpAMD64MOVWload, OpAMD64MOVWloadidx1, OpAMD64MOVWloadidx2:
-		return true
-	case OpAMD64MOVQconst, OpAMD64MOVLconst:
-		return uint64(uint16(x.AuxInt)) == uint64(x.AuxInt)
-	case OpArg: // note: but not ArgIntReg
-		return x.Type.Size() == 2 && x.Block.Func.Config.arch == "amd64"
-	case OpPhi, OpSelect0, OpSelect1:
-		// Phis can use each-other as an arguments, instead of tracking visited values,
-		// just limit recursion depth.
-		if depth <= 0 {
-			return false
-		}
-		for i := range x.Args {
-			if !ZeroUpper48Bits(x.Args[i], depth-1) {
-				return false
-			}
-		}
-		return true
-
-	}
-	return false
-}
-
-// ZeroUpper56Bits is similar to ZeroUpper32Bits, but for upper 56 bits.
-func ZeroUpper56Bits(x *Value, depth int) bool {
-	if x.Type.IsSigned() && x.Type.Size() < 8 {
-		return false
-	}
-	switch x.Op {
-	case OpAMD64MOVBQZX, OpAMD64MOVBload, OpAMD64MOVBloadidx1:
-		return true
-	case OpAMD64MOVQconst, OpAMD64MOVLconst:
-		return uint64(uint8(x.AuxInt)) == uint64(x.AuxInt)
-	case OpArg: // note: but not ArgIntReg
-		return x.Type.Size() == 1 && x.Block.Func.Config.arch == "amd64"
-	case OpPhi, OpSelect0, OpSelect1:
-		// Phis can use each-other as an arguments, instead of tracking visited values,
-		// just limit recursion depth.
-		if depth <= 0 {
-			return false
-		}
-		for i := range x.Args {
-			if !ZeroUpper56Bits(x.Args[i], depth-1) {
-				return false
-			}
-		}
-		return true
-
 	}
 	return false
 }
@@ -1481,15 +1472,15 @@ func isInlinableMemmove(dst, src *Value, sz int64, c *Config) bool {
 	// have fast Move ops.
 	switch c.arch {
 	case "amd64":
-		return sz <= 16 || (sz < 1024 && disjoint(dst, sz, src, sz))
+		return sz <= 16 || (sz < 1024 && disjoint1(dst, sz, src, sz))
 	case "arm64":
-		return sz <= 64 || (sz <= 1024 && disjoint(dst, sz, src, sz))
+		return sz <= 64 || (sz <= 1024 && disjoint1(dst, sz, src, sz))
 	case "loong64":
-		return sz <= 16 || (sz <= 64 && disjoint(dst, sz, src, sz))
+		return sz <= 16 || (sz <= 64 && disjoint1(dst, sz, src, sz))
 	case "386":
 		return sz <= 8
 	case "s390x", "ppc64", "ppc64le":
-		return sz <= 8 || disjoint(dst, sz, src, sz)
+		return sz <= 8 || disjoint1(dst, sz, src, sz)
 	case "arm", "mips", "mips64", "mipsle", "mips64le":
 		return sz <= 4
 	}
@@ -2099,7 +2090,7 @@ func isFixedLoad(v *Value, sym Sym, off int64) bool {
 		for _, f := range rttype.Type.Fields() {
 			if f.Offset == off && copyCompatibleType(v.Type, f.Type) {
 				switch f.Sym.Name {
-				case "Size_", "PtrBytes", "Hash", "Kind_", "GCData":
+				case "Size_", "PtrBytes", "Hash", "Kind_", "GCData", "TFlag":
 					return true
 				default:
 					// fmt.Println("unknown field", f.Sym.Name)
@@ -2174,6 +2165,10 @@ func rewriteFixedLoad(v *Value, sym Sym, sb *Value, off int64) *Value {
 				case "Hash":
 					v.reset(OpConst32)
 					v.AuxInt = int64(int32(types.TypeHash(t)))
+					return v
+				case "TFlag":
+					v.reset(OpConst8)
+					v.AuxInt = int64(t.TFlag())
 					return v
 				case "Kind_":
 					v.reset(OpConst8)
@@ -2714,6 +2709,18 @@ func bitsAdd64(x, y, carry int64) (r struct{ sum, carry int64 }) {
 	return
 }
 
+func bitsSub64(x, y, borrow int64) (r struct{ diff, borrow int64 }) {
+	d, b := bits.Sub64(uint64(x), uint64(y), uint64(borrow))
+	r.diff, r.borrow = int64(d), int64(b)
+	return
+}
+
+func bitsDiv128u(hi, lo, y int64) (r struct{ quo, rem int64 }) {
+	q, rem := bits.Div64(uint64(hi), uint64(lo), uint64(y))
+	r.quo, r.rem = int64(q), int64(rem)
+	return
+}
+
 func bitsMulU64(x, y int64) (r struct{ hi, lo int64 }) {
 	hi, lo := bits.Mul64(uint64(x), uint64(y))
 	r.hi, r.lo = int64(hi), int64(lo)
@@ -2798,4 +2805,83 @@ func bool2int(x bool) int {
 		b = 1
 	}
 	return b
+}
+
+// rewriteCondSelectIntoMath reports whether x OP (y * constant) should be used instead of a CondSelect.
+// x arbitrary, y in [0,1]
+func rewriteCondSelectIntoMath(config *Config, op Op, constant int64) bool {
+	switch config.arch {
+	case "amd64":
+		// constant=1 becomes zext, add 2/4/8 becomes lea, rest becomes shl.
+		// shl has asymmetric latency (1:3 vs 2:2) but performs better in accumulation chains.
+		return isPowerOfTwo(uint64(constant))
+	case "arm64":
+		switch op {
+		case OpAdd64, OpAdd32, OpAdd16, OpAdd8:
+			if constant == 1 {
+				return false // better done as CSINC
+			}
+			fallthrough
+		case OpSub64, OpSub32, OpSub16, OpSub8,
+			OpAnd64, OpAnd32, OpAnd16, OpAnd8,
+			OpOr64, OpOr32, OpOr16, OpOr8,
+			OpXor64, OpXor32, OpXor16, OpXor8:
+			// Implemented using an inline LSL
+			return isPowerOfTwo(uint64(constant))
+		default:
+			if constant == 1 {
+				return true
+			}
+		}
+	default:
+		// TODO: fine tune for other architectures.
+		return constant == 1
+	}
+	return false
+}
+
+func addToSub(op Op) Op {
+	switch op {
+	case OpAdd64:
+		return OpSub64
+	case OpAdd32:
+		return OpSub32
+	case OpAdd16:
+		return OpSub16
+	case OpAdd8:
+		return OpSub8
+	default:
+		panic(fmt.Sprintf("unexpected op %v", op))
+	}
+}
+
+func modularMultiplicativeInverse(x uint64) (y uint64) {
+	if x%2 != 1 {
+		panic("even numbers in a power-of-two modulus do not have a multiplicative inverse")
+	}
+	// we start with 3 bits of precision because each odd number is its own multiplicative inverse mod 8
+	y = x // 3 bits
+
+	// now use the Newton-Raphson method to double the number of correct bits in each iteration.
+	y *= 2 - x*y // 6 bits
+	y *= 2 - x*y // 12 bits
+	y *= 2 - x*y // 24 bits
+	y *= 2 - x*y // 48 bits
+	y *= 2 - x*y // 96 bits; good enough
+	return
+}
+
+func invertibleBool(op Op) bool {
+	switch op {
+	case OpLess64, OpLess32, OpLess16, OpLess8,
+		OpLeq64, OpLeq32, OpLeq16, OpLeq8,
+		OpLess64U, OpLess32U, OpLess16U, OpLess8U,
+		OpLeq64U, OpLeq32U, OpLeq16U, OpLeq8U,
+		OpEq64, OpEq32, OpEq16, OpEq8,
+		OpNeq64, OpNeq32, OpNeq16, OpNeq8,
+		OpNot:
+		return true
+	default:
+		return false
+	}
 }

@@ -35,7 +35,7 @@ func (check *Checker) rangeStmt(inner stmtContext, rangeStmt *ast.RangeStmt, noN
 	// described situation.
 
 	check.hasCallOrRecv = false
-	check.expr(nil, &x, rangeVar)
+	check.expr(nil, nil, &x, rangeVar)
 
 	if isTypes2 && x.isValid() && sValue == nil && !check.hasCallOrRecv {
 		if t, ok := arrayPtrDeref(x.typ().Underlying()).(*Array); ok {
@@ -243,6 +243,7 @@ func rangeKeyVal(check *Checker, orig Type, allowVersion func(goVersion) bool) (
 			return bad("requires go1.23 or later")
 		}
 		// check iterator arity
+		// TODO(gri) error messages could be less verbose (consider rangeStmt error and cause returned here)
 		switch {
 		case typ.Params().Len() != 1:
 			return bad("func must be func(yield func(...) bool): wrong argument count")
@@ -269,6 +270,8 @@ func rangeKeyVal(check *Checker, orig Type, allowVersion func(goVersion) bool) (
 			} else {
 				return bad("func must be func(yield func(...) bool): yield func does not return bool")
 			}
+		case cb.Variadic():
+			return bad(check.sprintf("yield func of type %s cannot be variadic", cb))
 		}
 		assert(cb.Recv() == nil)
 		// determine key and value types, if any

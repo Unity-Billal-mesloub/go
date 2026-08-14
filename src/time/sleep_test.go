@@ -628,7 +628,7 @@ func TestOverflowPeriodRuntimeTimer(t *testing.T) {
 	CheckRuntimeTimerPeriodOverflow()
 }
 
-func checkZeroPanicString(t *testing.T) {
+func checkZeroTimerPanicString(t *testing.T) {
 	e := recover()
 	s, _ := e.(string)
 	if want := "called on uninitialized Timer"; !strings.Contains(s, want) {
@@ -637,14 +637,36 @@ func checkZeroPanicString(t *testing.T) {
 }
 
 func TestZeroTimerResetPanics(t *testing.T) {
-	defer checkZeroPanicString(t)
+	defer checkZeroTimerPanicString(t)
 	var tr Timer
 	tr.Reset(1)
 }
 
 func TestZeroTimerStopPanics(t *testing.T) {
-	defer checkZeroPanicString(t)
+	defer checkZeroTimerPanicString(t)
 	var tr Timer
+	tr.Stop()
+}
+
+func checkCopiedTimerPanicString(t *testing.T) {
+	e := recover()
+	s, _ := e.(string)
+	if want := "called on copied Timer"; !strings.Contains(s, want) {
+		t.Errorf("panic = %v; want substring %q", e, want)
+	}
+}
+
+func TestCopiedTimerResetPanics(t *testing.T) {
+	defer checkCopiedTimerPanicString(t)
+	var tr Timer
+	tr = *NewTimer(0)
+	tr.Reset(1)
+}
+
+func TestCopiedTimerStopPanics(t *testing.T) {
+	defer checkCopiedTimerPanicString(t)
+	var tr Timer
+	tr = *NewTimer(0)
 	tr.Stop()
 }
 
@@ -797,16 +819,6 @@ func TestResetResult(t *testing.T) {
 // consistently indicates whether a value can be read from the channel.
 // Issue #69312.
 func testStopResetResult(t *testing.T, testStop bool) {
-	for _, name := range []string{"0", "1", "2"} {
-		t.Run("asynctimerchan="+name, func(t *testing.T) {
-			testStopResetResultGODEBUG(t, testStop, name)
-		})
-	}
-}
-
-func testStopResetResultGODEBUG(t *testing.T, testStop bool, godebug string) {
-	t.Setenv("GODEBUG", "asynctimerchan="+godebug)
-
 	stopOrReset := func(timer *Timer) bool {
 		if testStop {
 			return timer.Stop()

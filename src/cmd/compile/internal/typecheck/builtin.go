@@ -176,7 +176,6 @@ var runtimeDecls = [...]struct {
 	{"moveSliceNoCapNoScan", funcTag, 134},
 	{"memmove", funcTag, 135},
 	{"memclrNoHeapPointers", funcTag, 136},
-	{"memclrNoHeapPointersPreemptible", funcTag, 136},
 	{"memclrHasPointers", funcTag, 136},
 	{"memequal", funcTag, 137},
 	{"memequal0", funcTag, 138},
@@ -251,6 +250,7 @@ var runtimeDecls = [...]struct {
 	{"arm64HasATOMICS", varTag, 6},
 	{"loong64HasLAMCAS", varTag, 6},
 	{"loong64HasLAM_BH", varTag, 6},
+	{"loong64HasDBAR_HINTS", varTag, 6},
 	{"loong64HasLSX", varTag, 6},
 	{"riscv64HasZbb", varTag, 6},
 	{"asanregisterglobals", funcTag, 136},
@@ -293,7 +293,7 @@ func runtimeTypes() []*types.Type {
 	typs[31] = newSig(params(typs[30]), nil)
 	typs[32] = newSig(params(typs[2]), nil)
 	typs[33] = newSig(params(typs[5]), nil)
-	typs[34] = types.NewArray(typs[0], 32)
+	typs[34] = types.NewArray(typs[0], 64)
 	typs[35] = types.NewPtr(typs[34])
 	typs[36] = newSig(params(typs[35], typs[30], typs[30]), params(typs[30]))
 	typs[37] = newSig(params(typs[35], typs[30], typs[30], typs[30]), params(typs[30]))

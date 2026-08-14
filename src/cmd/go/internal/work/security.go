@@ -61,6 +61,7 @@ var validCompilerFlags = []*lazyregexp.Regexp{
 	re(`-f(no-)?constant-cfstrings`),
 	re(`-fdebug-prefix-map=([^@]+)=([^@]+)`),
 	re(`-fdiagnostics-show-note-include-stack`),
+	re(`-fexcess-precision=([A-Za-z0-9_]+)`),
 	re(`-ffile-prefix-map=([^@]+)=([^@]+)`),
 	re(`-fno-canonical-system-headers`),
 	re(`-f(no-)?eliminate-unused-debug-types`),
@@ -259,7 +260,7 @@ var validPkgConfigFlags = []*lazyregexp.Regexp{
 	re(`--cflags-only-I`),
 	re(`--cflags`),
 	re(`--define-prefix`),
-	re(`--define-variable=[A-Za-z_][A-Za-z0-9_]*=[^@\-]*`),
+	re(`--define-variable=[A-Za-z_][A-Za-z0-9_]*=[^@\-].*`),
 	re(`--digraph`),
 	re(`--dont-define-prefix`),
 	re(`--dont-relocate-paths`),
@@ -331,8 +332,32 @@ func checkCompilerFlagsForInternalLink(name, source string, list []string) error
 	}
 	// Currently the only flag on the allow list that causes problems
 	// for the linker is "-flto"; check for it manually here.
+	// Also check for -static/--static, which some toolchains accept
+	// as a compiler flag.
 	for _, fl := range list {
 		if strings.HasPrefix(fl, "-flto") {
+			return fmt.Errorf("flag %q triggers external linking", fl)
+		}
+		if fl == "-static" || fl == "--static" {
+			return fmt.Errorf("flag %q triggers external linking", fl)
+		}
+	}
+	return nil
+}
+
+// checkLinkerFlagsForInternalLink returns an error if 'list'
+// contains linker flags that are not compatible with internal linking.
+func checkLinkerFlagsForInternalLink(name, source string, list []string) error {
+	checkOverrides := false
+	if err := checkFlags(name, source, list, nil, validLinkerFlags, validLinkerFlagsWithNextArg, checkOverrides); err != nil {
+		return err
+	}
+	// Flags that force static linking require the external linker
+	// to resolve libc symbols. See #77768.
+	for _, fl := range list {
+		if fl == "-static" || fl == "--static" ||
+			fl == "-Wl,-static" || fl == "-Wl,--static" ||
+			fl == "-Wl,-Bstatic" {
 			return fmt.Errorf("flag %q triggers external linking", fl)
 		}
 	}

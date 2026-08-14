@@ -46,6 +46,7 @@ type DebugFlags struct {
 	GCProg                int    `help:"print dump of GC programs"`
 	GCStart               int    `help:"specify \"starting\" compiler's heap size in MiB" concurrent:"ok"`
 	Gossahash             string `help:"hash value for use in debugging the compiler"`
+	Html                  string `help:"dump named function to ssa.html" concurrent:"ok"`
 	InlFuncsWithClosures  int    `help:"allow functions with closures to be inlined" concurrent:"ok"`
 	InlStaticInit         int    `help:"allow static initialization of inlined calls" concurrent:"ok"`
 	InterfaceCycles       int    `help:"allow anonymous interface cycles" concurrent:"ok"`
@@ -68,6 +69,7 @@ type DebugFlags struct {
 	Panic                 int    `help:"show all compiler panics"`
 	Reshape               int    `help:"print information about expression reshaping"`
 	Shapify               int    `help:"print information about shaping recursive types"`
+	Simd                  int    `help:"print information about simd analysis and code transformation" concurrent:"ok"`
 	Slice                 int    `help:"print information about slice compilation"`
 	SoftFloat             int    `help:"force compiler to emit soft-float code" concurrent:"ok"`
 	StaticCopy            int    `help:"print information about missed static copies" concurrent:"ok"`

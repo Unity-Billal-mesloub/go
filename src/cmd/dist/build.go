@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"go/build/constraint"
 	"io"
 	"io/fs"
 	"log"
@@ -418,12 +419,7 @@ func findgoversion() string {
 		return chomp(readfile(path))
 	}
 
-	// Show a nicer error message if this isn't a Git repo.
-	if !isGitRepo() {
-		fatalf("FAILED: not a Git repo; must put a VERSION file in $GOROOT")
-	}
-
-	// Otherwise, use Git.
+	// Otherwise, use Git or jj.
 	//
 	// Include 1.x base version, hash, and date in the version.
 	// Make sure it includes the substring "devel", but otherwise
@@ -442,7 +438,16 @@ func findgoversion() string {
 		fatalf("internal/goversion/goversion.go does not contain 'const Version = ...'")
 	}
 	version := fmt.Sprintf("go1.%s-devel_", m[1])
-	version += chomp(run(goroot, CheckExit, "git", "log", "-n", "1", "--format=format:%h %cd", "HEAD"))
+	switch {
+	case isGitRepo():
+		version += chomp(run(goroot, CheckExit, "git", "log", "-n", "1", "--format=format:%h %cd", "HEAD"))
+	case isJJRepo():
+		const jjTemplate = `commit_id.short(10) ++ " " ++ committer.timestamp().format("%c %z")`
+		version += chomp(run(goroot, CheckExit, "jj", "--no-pager", "--color=never", "log", "--no-graph", "-r", "@", "-T", jjTemplate))
+	default:
+		// Show a nicer error message if this isn't a Git or jj repo.
+		fatalf("FAILED: not a Git or jj repo; must put a VERSION file in $GOROOT")
+	}
 
 	// Cache version.
 	writefile(version, path, 0)
@@ -487,6 +492,16 @@ func isGitRepo() bool {
 		gitDir = filepath.Join(goroot, gitDir)
 	}
 	return isdir(gitDir)
+}
+
+// isJJRepo reports whether the working directory is inside a jj repository.
+func isJJRepo() bool {
+	// Don't check the error from jj, similarly to what we do in isGitRepo.
+	jjDir := chomp(run(goroot, 0, "jj", "--no-pager", "--color=never", "root"))
+	if !filepath.IsAbs(jjDir) {
+		jjDir = filepath.Join(goroot, jjDir)
+	}
+	return isdir(jjDir)
 }
 
 /*
@@ -625,8 +640,8 @@ func mustLinkExternal(goos, goarch string, cgoEnabled bool) bool {
 			// https://golang.org/issue/14449
 			return true
 		case "ppc64":
-			// Big Endian PPC64 cgo internal linking is not implemented for aix or linux.
-			if goos == "aix" || goos == "linux" {
+			// Big Endian PPC64 cgo internal linking is not implemented for aix.
+			if goos == "aix" {
 				return true
 			}
 		}
@@ -909,6 +924,7 @@ func runInstall(pkg string, ch chan struct{}) {
 		"-D", "GOARCH_" + goarch,
 		"-D", "GOOS_GOARCH_" + goos + "_" + goarch,
 		"-p", pkg,
+		"-std",
 	}
 	if goarch == "mips" || goarch == "mipsle" {
 		// Define GOMIPS_value from gomips.
@@ -1152,11 +1168,12 @@ func shouldbuild(file, pkg string) bool {
 			break
 		}
 		if strings.HasPrefix(p, "//go:build ") {
-			matched, err := matchexpr(p[len("//go:build "):])
+			c, err := constraint.Parse(p)
 			if err != nil {
-				errprintf("%s: %v", file, err)
+				errprintf("%s: parsing //go:build line: %v", file, err)
+				return false
 			}
-			return matched
+			return c.Eval(matchtag)
 		}
 	}
 
@@ -1543,8 +1560,7 @@ func cmdbootstrap() {
 	os.Setenv("CC", compilerEnvLookup("CC", defaultcc, goos, goarch))
 	// Now that cmd/go is in charge of the build process, enable GOEXPERIMENT.
 	os.Setenv("GOEXPERIMENT", goexperiment)
-	// No need to enable PGO for toolchain2.
-	goInstall(toolenv(), goBootstrap, append([]string{"-pgo=off"}, toolchain...)...)
+	goInstall(toolenv(), goBootstrap, toolchain...)
 	if debug {
 		run("", ShowOutput|CheckExit, pathf("%s/compile", tooldir), "-V=full")
 		copyfile(pathf("%s/compile2", tooldir), pathf("%s/compile", tooldir), writeExec)
@@ -1570,27 +1586,24 @@ func cmdbootstrap() {
 	if vflag > 0 {
 		xprintf("\n")
 	}
-	xprintf("Building Go toolchain3 using go_bootstrap and Go toolchain2.\n")
-	goInstall(toolenv(), goBootstrap, append([]string{"-a"}, toolchain...)...)
+	xprintf("Building Go toolchain3 and commands using go_bootstrap and Go toolchain2.\n")
+	goInstall(toolenv(), goBootstrap, append([]string{"-a"}, toolsToInstall...)...)
 	if debug {
 		run("", ShowOutput|CheckExit, pathf("%s/compile", tooldir), "-V=full")
 		copyfile(pathf("%s/compile3", tooldir), pathf("%s/compile", tooldir), writeExec)
 	}
 
-	// Now that toolchain3 has been built from scratch, its compiler and linker
-	// should have accurate build IDs suitable for caching.
-	// Now prime the build cache with the rest of the standard library for
-	// testing, and so that the user can run 'go install std cmd' to quickly
-	// iterate on local changes without waiting for a full rebuild.
-	if _, err := os.Stat(pathf("%s/VERSION", goroot)); err == nil {
-		// If we have a VERSION file, then we use the Go version
-		// instead of build IDs as a cache key, and there is no guarantee
-		// that code hasn't changed since the last time we ran a build
-		// with this exact VERSION file (especially if someone is working
-		// on a release branch). We must not fall back to the shared build cache
-		// in this case. Leave $GOCACHE alone.
-	} else {
-		os.Setenv("GOCACHE", oldgocache)
+	// If goexperiment == "", so that the first compiler was semantically
+	// identical to the second compiler, toolchain3 has converged and can
+	// be used as the final toolchain (or the final host toolchain in the
+	// case of a cross compile). Otherwise we need to do one more build.
+	if goexperiment != "" {
+		xprintf("Building commands for GOEXPERIMENT=%s convergence for %s/%s.\n", goexperiment, goos, goarch)
+		goInstall(toolenv(), goBootstrap, append([]string{"-a"}, toolsToInstall...)...)
+		if debug {
+			run("", ShowOutput|CheckExit, pathf("%s/compile", tooldir), "-V=full")
+			copyfile(pathf("%s/compile3goexp", tooldir), pathf("%s/compile", tooldir), writeExec)
+		}
 	}
 
 	if goos == oldgoos && goarch == oldgoarch {
@@ -1599,17 +1612,16 @@ func cmdbootstrap() {
 		if vflag > 0 {
 			xprintf("\n")
 		}
-		xprintf("Building packages and commands for %s/%s.\n", goos, goarch)
+		xprintf("Checking command staleness for %s/%s.\n", goos, goarch)
 	} else {
 		// GOOS/GOARCH does not match GOHOSTOS/GOHOSTARCH.
-		// Finish GOHOSTOS/GOHOSTARCH installation and then
+		// Check the GOHOSTOS/GOHOSTARCH build and then
 		// run GOOS/GOARCH installation.
 		timelog("build", "host toolchain")
 		if vflag > 0 {
 			xprintf("\n")
 		}
-		xprintf("Building commands for host, %s/%s.\n", goos, goarch)
-		goInstall(toolenv(), goBootstrap, toolsToInstall...)
+		xprintf("Checking command staleness for host, %s/%s.\n", goos, goarch)
 		checkNotStale(toolenv(), goBootstrap, toolsToInstall...)
 		checkNotStale(toolenv(), gorootBinGo, toolsToInstall...)
 
@@ -1622,14 +1634,11 @@ func cmdbootstrap() {
 		os.Setenv("GOOS", goos)
 		os.Setenv("GOARCH", goarch)
 		os.Setenv("CC", compilerEnvLookup("CC", defaultcc, goos, goarch))
-		xprintf("Building packages and commands for target, %s/%s.\n", goos, goarch)
+		xprintf("Building commands for target, %s/%s.\n", goos, goarch)
+		goInstall(toolenv(), goBootstrap, append([]string{"-a"}, toolsToInstall...)...)
 	}
-	goInstall(nil, goBootstrap, "std")
-	goInstall(toolenv(), goBootstrap, toolsToInstall...)
-	checkNotStale(toolenv(), goBootstrap, toolchain...)
-	checkNotStale(nil, goBootstrap, "std")
+
 	checkNotStale(toolenv(), goBootstrap, toolsToInstall...)
-	checkNotStale(nil, gorootBinGo, "std")
 	checkNotStale(toolenv(), gorootBinGo, toolsToInstall...)
 	if debug {
 		run("", ShowOutput|CheckExit, pathf("%s/compile", tooldir), "-V=full")
@@ -1780,7 +1789,7 @@ var cgoEnabled = map[string]bool{
 	"linux/arm":       true,
 	"linux/arm64":     true,
 	"linux/loong64":   true,
-	"linux/ppc64":     false,
+	"linux/ppc64":     true,
 	"linux/ppc64le":   true,
 	"linux/mips":      true,
 	"linux/mipsle":    true,
@@ -1805,7 +1814,6 @@ var cgoEnabled = map[string]bool{
 	"openbsd/amd64":   true,
 	"openbsd/arm":     true,
 	"openbsd/arm64":   true,
-	"openbsd/mips64":  true,
 	"openbsd/ppc64":   false,
 	"openbsd/riscv64": true,
 	"plan9/386":       false,
@@ -1824,7 +1832,6 @@ var cgoEnabled = map[string]bool{
 var broken = map[string]bool{
 	"freebsd/riscv64": true, // Broken: go.dev/issue/76475.
 	"linux/sparc64":   true, // An incomplete port. See CL 132155.
-	"openbsd/mips64":  true, // Broken: go.dev/issue/58110.
 }
 
 // List of platforms which are first class ports. See go.dev/issue/38874.

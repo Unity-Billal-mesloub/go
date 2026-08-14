@@ -18,8 +18,20 @@ const uintSize = 32 << (^uint(0) >> 63) // 32 or 64
 // bitset is a bit array for dense indexes.
 type bitset []uint
 
+func computeBitsetSize(n int) int {
+	return (n + uintSize - 1) / uintSize
+}
+
 func newBitset(n int) bitset {
-	return make(bitset, (n+uintSize-1)/uintSize)
+	return make(bitset, computeBitsetSize(n))
+}
+
+func (c *Cache) allocBitset(n int) bitset {
+	return bitset(c.allocUintSlice(computeBitsetSize(n)))
+}
+
+func (c *Cache) freeBitset(bs bitset) {
+	c.freeUintSlice([]uint(bs))
 }
 
 func (bs bitset) Reset() {
@@ -63,12 +75,6 @@ type posetUndo struct {
 	ID   ID
 	edge posetEdge
 }
-
-const (
-	// Make poset handle values as unsigned numbers.
-	// (TODO: remove?)
-	posetFlagUnsigned = 1 << iota
-)
 
 // A poset edge. The zero value is the null/empty edge.
 // Packs target node index (31 bits) and strict flag (1 bit).
@@ -138,7 +144,6 @@ type posetNode struct {
 //	   J    K
 type poset struct {
 	lastidx uint32            // last generated dense index
-	flags   uint8             // internal flags
 	values  map[ID]uint32     // map SSA values to dense indexes
 	nodes   []posetNode       // nodes (in all DAGs)
 	roots   []uint32          // list of root nodes (forest)
@@ -153,14 +158,6 @@ func newPoset() *poset {
 		roots:  make([]uint32, 0, 4),
 		noneq:  make(map[uint32]bitset),
 		undo:   make([]posetUndo, 0, 4),
-	}
-}
-
-func (po *poset) SetUnsigned(uns bool) {
-	if uns {
-		po.flags |= posetFlagUnsigned
-	} else {
-		po.flags &^= posetFlagUnsigned
 	}
 }
 

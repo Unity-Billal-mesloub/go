@@ -8,6 +8,7 @@ import (
 	"cmd/compile/internal/abi"
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
+	"cmd/compile/internal/ssa/ssabase"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/src"
@@ -21,20 +22,21 @@ type Config struct {
 	PtrSize        int64  // 4 or 8; copy of cmd/internal/sys.Arch.PtrSize
 	RegSize        int64  // 4 or 8; copy of cmd/internal/sys.Arch.RegSize
 	Types          Types
-	lowerBlock     blockRewriter  // block lowering function, first round
-	lowerValue     valueRewriter  // value lowering function, first round
-	lateLowerBlock blockRewriter  // block lowering function that needs to be run after the first round; only used on some architectures
-	lateLowerValue valueRewriter  // value lowering function that needs to be run after the first round; only used on some architectures
-	splitLoad      valueRewriter  // function for splitting merged load ops; only used on some architectures
-	registers      []Register     // machine registers
-	gpRegMask      regMask        // general purpose integer register mask
-	fpRegMask      regMask        // floating point register mask
-	fp32RegMask    regMask        // floating point register mask
-	fp64RegMask    regMask        // floating point register mask
-	specialRegMask regMask        // special register mask
-	intParamRegs   []int8         // register numbers of integer param (in/out) registers
-	floatParamRegs []int8         // register numbers of floating param (in/out) registers
-	ABI1           *abi.ABIConfig // "ABIInternal" under development // TODO change comment when this becomes current
+	lowerBlock     blockRewriter      // block lowering function, first round
+	lowerValue     valueRewriter      // value lowering function, first round
+	lateLowerBlock blockRewriter      // block lowering function that needs to be run after the first round; only used on some architectures
+	lateLowerValue valueRewriter      // value lowering function that needs to be run after the first round; only used on some architectures
+	splitLoad      valueRewriter      // function for splitting merged load ops; only used on some architectures
+	registers      []ssabase.Register // machine registers
+	gpRegMask      regMask            // general purpose integer register mask
+	fpRegMask      regMask            // floating point register mask
+	fp32RegMask    regMask            // floating point register mask
+	fp64RegMask    regMask            // floating point register mask
+	simdRegMask    regMask            // simd register mask; may be same as fpRegMask
+	specialRegMask regMask            // special register mask
+	intParamRegs   []int8             // register numbers of integer param (in/out) registers
+	floatParamRegs []int8             // register numbers of floating param (in/out) registers
+	ABI1           *abi.ABIConfig     // "ABIInternal" under development // TODO change comment when this becomes current
 	ABI0           *abi.ABIConfig
 	FPReg          int8      // register number of frame pointer, -1 if not used
 	LinkReg        int8      // register number of link register if it is a general purpose register, -1 if not used
@@ -186,6 +188,7 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		c.registers = registersAMD64[:]
 		c.gpRegMask = gpRegMaskAMD64
 		c.fpRegMask = fpRegMaskAMD64
+		c.simdRegMask = simdRegMaskAMD64
 		c.specialRegMask = specialRegMaskAMD64
 		c.intParamRegs = paramIntRegAMD64
 		c.floatParamRegs = paramFloatRegAMD64
@@ -233,6 +236,8 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		c.registers = registersARM64[:]
 		c.gpRegMask = gpRegMaskARM64
 		c.fpRegMask = fpRegMaskARM64
+		c.simdRegMask = simdRegMaskARM64
+		c.specialRegMask = specialRegMaskARM64
 		c.intParamRegs = paramIntRegARM64
 		c.floatParamRegs = paramFloatRegARM64
 		c.FPReg = framepointerRegARM64
@@ -365,6 +370,7 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		c.fpRegMask = fpRegMaskWasm
 		c.fp32RegMask = fp32RegMaskWasm
 		c.fp64RegMask = fp64RegMaskWasm
+		c.simdRegMask = simdRegMaskWasm
 		c.FPReg = framepointerRegWasm
 		c.LinkReg = linkRegWasm
 		c.hasGReg = true
@@ -387,7 +393,7 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		// LoweredWB is secretly a CALL and CALLs on 386 in
 		// shared mode get rewritten by obj6.go to go through
 		// the GOT, which clobbers BX.
-		opcodeTable[Op386LoweredWB].reg.clobbers |= 1 << 3 // BX
+		opcodeTable[Op386LoweredWB].reg.clobbers = opcodeTable[Op386LoweredWB].reg.clobbers.addReg(3) // BX
 	}
 
 	c.buildRecipes(arch)
@@ -533,20 +539,6 @@ func (c *Config) buildRecipes(arch string) {
 			func(m, x, y *Value) *Value {
 				return m.Block.NewValue2(m.Pos, OpARM64SUB, m.Type, x, y)
 			})
-		// regular shifts
-		for i := 1; i < 64; i++ {
-			c := 10
-			if i == 1 {
-				// Prefer x<<1 over x+x.
-				// Note that we eventually reverse this decision in ARM64latelower.rules,
-				// but this makes shift combining rules in ARM64.rules simpler.
-				c--
-			}
-			r(1<<i, 0, c,
-				func(m, x, y *Value) *Value {
-					return m.Block.NewValue1I(m.Pos, OpARM64SLLconst, m.Type, int64(i), x)
-				})
-		}
 		// ADDshiftLL
 		for i := 1; i < 64; i++ {
 			c := 20
@@ -580,6 +572,20 @@ func (c *Config) buildRecipes(arch string) {
 					return m.Block.NewValue2I(m.Pos, OpARM64SUBshiftLL, m.Type, int64(i), x, y)
 				})
 		}
+		// regular shifts
+		for i := 1; i < 64; i++ {
+			c := 10
+			if i == 1 {
+				// Prefer x<<1 over x+x.
+				// Note that we eventually reverse this decision in ARM64latelower.rules,
+				// but this makes shift combining rules in ARM64.rules simpler.
+				c--
+			}
+			r(1<<i, 0, c,
+				func(m, x, y *Value) *Value {
+					return m.Block.NewValue1I(m.Pos, OpARM64SLLconst, m.Type, int64(i), x)
+				})
+		}
 	case "loong64":
 		// - multiply is 4 cycles.
 		// - add/sub/shift/alsl are 1 cycle.
@@ -603,6 +609,15 @@ func (c *Config) buildRecipes(arch string) {
 				return m.Block.NewValue2(m.Pos, OpLOONG64SUBV, m.Type, x, y)
 			})
 
+		// ADDshiftLLV
+		for i := 1; i < 5; i++ {
+			c := 10
+			r(1, 1<<i, c,
+				func(m, x, y *Value) *Value {
+					return m.Block.NewValue2I(m.Pos, OpLOONG64ADDshiftLLV, m.Type, int64(i), x, y)
+				})
+		}
+
 		// regular shifts
 		for i := 1; i < 64; i++ {
 			c := 10
@@ -615,15 +630,6 @@ func (c *Config) buildRecipes(arch string) {
 			r(1<<i, 0, c,
 				func(m, x, y *Value) *Value {
 					return m.Block.NewValue1I(m.Pos, OpLOONG64SLLVconst, m.Type, int64(i), x)
-				})
-		}
-
-		// ADDshiftLLV
-		for i := 1; i < 5; i++ {
-			c := 10
-			r(1, 1<<i, c,
-				func(m, x, y *Value) *Value {
-					return m.Block.NewValue2I(m.Pos, OpLOONG64ADDshiftLLV, m.Type, int64(i), x, y)
 				})
 		}
 	}

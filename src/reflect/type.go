@@ -1710,26 +1710,18 @@ func haveIdenticalUnderlyingType(T, V *abi.Type, cmpTags bool) bool {
 	return false
 }
 
-// typelinks is implemented in package runtime.
-// It returns a slice of the sections in each module,
-// and a slice of *rtype offsets in each module.
-//
-// The types in each module are sorted by string. That is, the first
-// two linked types of the first module are:
-//
-//	d0 := sections[0]
-//	t1 := (*rtype)(add(d0, offset[0][0]))
-//	t2 := (*rtype)(add(d0, offset[0][1]))
-//
-// and
-//
-//	t1.String() < t2.String()
+// compiledTypelinks is implemented in package runtime.
+// It returns the types defined by the first module,
+// and a slice of types defined in any other modules.
+// Each slice of types is sorted by string.
 //
 // Note that strings are not unique identifiers for types:
 // there can be more than one with a given string.
 // Only types we might want to look up are included:
 // pointers, channels, maps, slices, and arrays.
-func typelinks() (sections []unsafe.Pointer, offset [][]int32)
+//
+//go:linknamestd compiledTypelinks
+func compiledTypelinks() ([]*abi.Type, [][]*abi.Type)
 
 // rtypeOff should be an internal detail,
 // but widely used packages access it using linkname.
@@ -1744,7 +1736,7 @@ func rtypeOff(section unsafe.Pointer, off int32) *abi.Type {
 	return (*abi.Type)(add(section, uintptr(off), "sizeof(rtype) > 0"))
 }
 
-// typesByString returns the subslice of typelinks() whose elements have
+// typesByString returns all known types whose elements have
 // the given string representation.
 // It may be empty (no known types with that string) or may have
 // multiple elements (multiple types with that string).
@@ -1760,19 +1752,17 @@ func rtypeOff(section unsafe.Pointer, off int32) *abi.Type {
 //
 //go:linkname typesByString
 func typesByString(s string) []*abi.Type {
-	sections, offset := typelinks()
+	first, rest := compiledTypelinks()
 	var ret []*abi.Type
 
-	for offsI, offs := range offset {
-		section := sections[offsI]
-
+	searchTypes := func(types []*abi.Type) {
 		// We are looking for the first index i where the string becomes >= s.
 		// This is a copy of sort.Search, with f(h) replaced by (*typ[h].String() >= s).
-		i, j := 0, len(offs)
+		i, j := 0, len(types)
 		for i < j {
 			h := int(uint(i+j) >> 1) // avoid overflow when computing h
 			// i ≤ h < j
-			if !(stringFor(rtypeOff(section, offs[h])) >= s) {
+			if !(stringFor(types[h]) >= s) {
 				i = h + 1 // preserves f(i-1) == false
 			} else {
 				j = h // preserves f(j) == true
@@ -1783,14 +1773,20 @@ func typesByString(s string) []*abi.Type {
 		// Having found the first, linear scan forward to find the last.
 		// We could do a second binary search, but the caller is going
 		// to do a linear scan anyway.
-		for j := i; j < len(offs); j++ {
-			typ := rtypeOff(section, offs[j])
+		for j := i; j < len(types); j++ {
+			typ := types[j]
 			if stringFor(typ) != s {
 				break
 			}
 			ret = append(ret, typ)
 		}
 	}
+
+	searchTypes(first)
+	for _, r := range rest {
+		searchTypes(r)
+	}
+
 	return ret
 }
 
@@ -1825,6 +1821,7 @@ var funcLookupCache struct {
 // If t's size is equal to or exceeds this limit, ChanOf panics.
 func ChanOf(dir ChanDir, t Type) Type {
 	typ := t.common()
+	t = toType(typ) // for #80332, ensure t's exported methods are not shadowed
 
 	// Look in cache.
 	ckey := cacheKey{Chan, typ, nil, uintptr(dir)}
@@ -1916,7 +1913,7 @@ func initFuncTypes(n int) Type {
 // panics if the in[len(in)-1] does not represent a slice and variadic is
 // true.
 func FuncOf(in, out []Type, variadic bool) Type {
-	if variadic && (len(in) == 0 || in[len(in)-1].Kind() != Slice) {
+	if variadic && (len(in) == 0 || toType(in[len(in)-1].common()).Kind() != Slice) {
 		panic("reflect.FuncOf: last arg of variadic func must be slice")
 	}
 
@@ -2132,6 +2129,7 @@ func emitGCMask(out []byte, base uintptr, typ *abi.Type, n uintptr) {
 // For example, if t represents int, SliceOf(t) represents []int.
 func SliceOf(t Type) Type {
 	typ := t.common()
+	t = toType(typ) // for #80332, ensure t's exported methods are not shadowed
 
 	// Look in cache.
 	ckey := cacheKey{Slice, typ, nil, 0}
@@ -2287,7 +2285,7 @@ func StructOf(fields []StructField) Type {
 			if pkgpath == "" {
 				pkgpath = fpkgpath
 			} else if pkgpath != fpkgpath {
-				panic("reflect.Struct: fields with different PkgPath " + pkgpath + " and " + fpkgpath)
+				panic("reflect.StructOf: fields with different PkgPath " + pkgpath + " and " + fpkgpath)
 			}
 		}
 
@@ -2660,6 +2658,7 @@ func ArrayOf(length int, elem Type) Type {
 	}
 
 	typ := elem.common()
+	elem = toType(typ) // for #80332, ensure elem's exported methods are not shadowed
 
 	// Look in cache.
 	ckey := cacheKey{Array, typ, nil, uintptr(length)}
@@ -2781,7 +2780,7 @@ func adjustAIXGCData(addr *byte) *byte {
 // adjustAIXGCDataForRuntime adjusts the GCData field pointer
 // as the runtime requires for AIX. See runtime.getGCMaskOnDemand.
 //
-//go:linkname adjustAIXGCDataForRuntime
+//go:linknamestd adjustAIXGCDataForRuntime
 //go:noescape
 func adjustAIXGCDataForRuntime(*byte) *byte
 

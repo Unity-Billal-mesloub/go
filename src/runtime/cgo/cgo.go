@@ -12,7 +12,6 @@ package cgo
 /*
 
 #cgo darwin,!arm64 LDFLAGS: -lpthread
-#cgo darwin,arm64 LDFLAGS: -framework CoreFoundation
 #cgo dragonfly LDFLAGS: -lpthread
 #cgo freebsd LDFLAGS: -lpthread
 #cgo android LDFLAGS: -llog
@@ -20,8 +19,6 @@ package cgo
 #cgo netbsd LDFLAGS: -lpthread
 #cgo openbsd LDFLAGS: -lpthread
 #cgo aix LDFLAGS: -Wl,-berok
-#cgo solaris LDFLAGS: -lxnet
-#cgo solaris LDFLAGS: -lsocket
 
 // Use -fno-stack-protector to avoid problems locating the
 // proper support functions. See issues #52919, #54313, #58385.
